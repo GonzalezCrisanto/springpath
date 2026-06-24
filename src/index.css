@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/* Class-based dark mode — .dark on <html> triggers dark variant utilities */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  @theme inline: Tailwind reads these as CSS variable references at runtime,
+  so bg-page / text-primary / etc. switch automatically when .dark is toggled.
+*/
+@theme inline {
+  --color-page:             var(--bg-page);
+  --color-surface:          var(--bg-surface);
+  --color-elevated:         var(--bg-elevated);
+  --color-border:           var(--border-color);
+  --color-text-primary:     var(--text-primary);
+  --color-text-secondary:   var(--text-secondary);
+  --color-text-muted:       var(--text-muted);
+  --color-accent:           var(--accent);
+  --color-accent-soft:      var(--accent-soft);
+  --color-accent-bg:        var(--accent-bg);
+  --color-code-bg:          var(--code-bg);
+  --color-code-annotation:  var(--code-annotation);
+  --color-code-type:        var(--code-type);
+  --color-code-text:        var(--code-text);
+
+  --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, Consolas, monospace;
+}
+
+/* Palette D — light mode (base) */
+:root {
+  --bg-page:         #ffffff;
+  --bg-surface:      #f7f8f7;
+  --bg-elevated:     #eef0ee;
+  --border-color:    #e0e2e0;
+  --text-primary:    #161817;
+  --text-secondary:  #44463f;
+  --text-muted:      #6b6f6a;
+  --accent:          #0F6E56;
+  --accent-soft:     #1D9E75;
+  --accent-bg:       #E1F5EE;
+  --code-bg:         #f7f8f7;
+  --code-annotation: #0F6E56;
+  --code-type:       #185FA5;
+  --code-text:       #2c2f2d;
+}
+
+/* Palette D — dark mode (default; applied via .dark on <html>) */
+.dark {
+  --bg-page:         #0f110f;
+  --bg-surface:      #161817;
+  --bg-elevated:     #1f2220;
+  --border-color:    #2b2e2d;
+  --text-primary:    #e9eae8;
+  --text-secondary:  #c6c8c5;
+  --text-muted:      #7c807c;
+  --accent:          #1D9E75;
+  --accent-soft:     #5DCAA5;
+  --accent-bg:       #04342C;
+  --code-bg:         #0f110f;
+  --code-annotation: #1D9E75;
+  --code-type:       #85B7EB;
+  --code-text:       #c6c8c5;
+}
+
+/* Base reset */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

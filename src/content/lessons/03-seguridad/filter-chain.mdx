@@ -1,0 +1,135 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+
+## Qué es el filter chain
+
+Spring Security no funciona como un único componente monolítico. Intercepta cada petición HTTP
+a través de una cadena de filtros — el **SecurityFilterChain** — que se ejecuta antes de que la
+solicitud llegue a cualquier controller.
+
+Cada filtro en la cadena tiene una responsabilidad concreta: autenticar, verificar autorización,
+manejar excepciones de seguridad, o simplemente pasar la solicitud al siguiente filtro. Si un filtro
+detecta un problema, puede cortar la cadena y retornar una respuesta (401, 403) directamente, sin
+que el controller llegue a ejecutarse nunca.
+
+Internamente, Spring Security registra este mecanismo como un `Filter` estándar de Servlet que
+delega en una cadena interna de filtros propia del framework. Desde fuera, el contenedor de servlets
+ve un solo filtro; adentro hay una cadena completa y configurable.
+
+## Los filtros más importantes
+
+**`UsernamePasswordAuthenticationFilter`** — intercepta peticiones `POST /login` (o la URL que
+configures), extrae el nombre de usuario y contraseña del cuerpo, e intenta autenticar al usuario
+contra el `AuthenticationManager`. Si tiene éxito, delega el manejo al `AuthenticationSuccessHandler`;
+si falla, al `AuthenticationFailureHandler`.
+
+**`BasicAuthenticationFilter`** — hace lo mismo pero leyendo las credenciales del header
+`Authorization: Basic <base64>`. Se activa cuando habilitás `httpBasic()` en la configuración.
+En APIs REST modernas con JWT se suele reemplazar por un filtro propio.
+
+**`ExceptionTranslationFilter`** — se encarga de traducir las excepciones de seguridad en
+respuestas HTTP. Captura `AuthenticationException` (→ 401) y `AccessDeniedException` (→ 403).
+Sin este filtro, esas excepciones llegarían al contenedor de servlets como errores 500.
+
+**`AuthorizationFilter`** (antes `FilterSecurityInterceptor`) — es el último filtro relevante antes
+del controller. Verifica si el usuario autenticado tiene permiso para acceder al recurso solicitado,
+consultando las reglas definidas en `.authorizeHttpRequests(...)`.
+
+## Cómo se configura
+
+La configuración moderna usa un bean `SecurityFilterChain` con la API fluida de `HttpSecurity`.
+Ya no hay que extender `WebSecurityConfigurerAdapter` (deprecated desde Spring Security 5.7):
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/public/**").permitAll()
+                .anyRequest().authenticated()
+            )
+            .sessionManagement(session -> session
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            )
+            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+}
+```
+
+El método `addFilterBefore` inserta tu filtro JWT en la cadena justo antes del filtro de
+autenticación por formulario. Así, cuando la petición llega al `UsernamePasswordAuthenticationFilter`,
+ya fue procesada y autenticada vía token.
+
+## El flujo completo
+
+Cuando llega una petición HTTP, el flujo es el siguiente:
+
+1. El contenedor de servlets (Tomcat, Netty) la recibe y la pasa al `DelegatingFilterProxy` de Spring Security.
+2. El proxy delega en el `FilterChainProxy`, que selecciona cuál `SecurityFilterChain` aplica según la URL.
+3. Los filtros se ejecutan en orden. Cada uno puede procesar la petición, modificar el `SecurityContext`, o cortarla.
+4. Si la autenticación es exitosa, el `SecurityContext` queda poblado con el objeto `Authentication`.
+5. El `AuthorizationFilter` verifica que ese `Authentication` tenga acceso al recurso solicitado.
+6. Si todo está bien, la petición llega al DispatcherServlet y de ahí al controller.
+7. Si falla en cualquier punto, el `ExceptionTranslationFilter` devuelve 401 o 403.
+
+> **Clave:** el orden de los filtros importa. Spring Security tiene un orden predefinido para sus
+> filtros internos, y cuando insertás uno propio con `addFilterBefore` o `addFilterAfter`, tenés
+> que entender exactamente en qué punto del pipeline querés intervenir. Un filtro JWT mal posicionado
+> puede hacer que las peticiones fallen de formas difíciles de debuggear.
+
+## Por qué stateless
+
+El ejemplo configura `SessionCreationPolicy.STATELESS`, lo que le indica a Spring Security que
+**no cree ni use sesiones HTTP**. Esto significa que no habrá cookie `JSESSIONID` y que el servidor
+no mantiene estado entre peticiones.
+
+En una arquitectura con JWT, cada petición lleva su propio token de autenticación en el header
+`Authorization: Bearer <token>`. El servidor verifica la firma del token en cada request sin
+necesidad de consultar ninguna sesión almacenada. Esto hace la aplicación inherentemente escalable:
+cualquier instancia puede atender cualquier petición sin necesidad de sticky sessions ni sesiones
+compartidas en Redis.
+
+El detalle de cómo construir y validar ese JWT lo vemos en la próxima lección.
+
+## Autoevaluación
+
+<Quiz questions={[
+  {
+    question: "¿En qué orden se ejecutan los filtros de Spring Security respecto al DispatcherServlet?",
+    options: [
+      "Primero el DispatcherServlet, luego los filtros",
+      "Los filtros se ejecutan antes de que la petición llegue al DispatcherServlet",
+      "Los filtros solo se ejecutan en respuestas, no en peticiones",
+      "El orden depende de la anotación @Order en cada filtro"
+    ],
+    correct: 1,
+    explanation: "El SecurityFilterChain intercepta la petición antes del DispatcherServlet. Si un filtro rechaza la petición (401/403), el controller nunca se ejecuta."
+  },
+  {
+    question: "¿Qué filtro es responsable de convertir una AccessDeniedException en una respuesta HTTP 403?",
+    options: [
+      "AuthorizationFilter",
+      "UsernamePasswordAuthenticationFilter",
+      "ExceptionTranslationFilter",
+      "FilterSecurityInterceptor"
+    ],
+    correct: 2,
+    explanation: "ExceptionTranslationFilter captura AuthenticationException (→ 401) y AccessDeniedException (→ 403). Sin él, esas excepciones llegarían al contenedor como errores 500."
+  },
+  {
+    question: "¿Qué implica configurar SessionCreationPolicy.STATELESS?",
+    options: [
+      "Spring Security no valida los tokens JWT",
+      "El servidor no crea ni usa sesiones HTTP entre peticiones",
+      "Los usuarios se desloguean automáticamente después de cada petición",
+      "Solo se permiten peticiones GET"
+    ],
+    correct: 1,
+    explanation: "STATELESS indica que no se crea ni se usa JSESSIONID. Cada petición debe ser autosuficiente, lo que hace la app escalable horizontalmente sin sticky sessions ni sesiones compartidas en Redis."
+  }
+]} />
