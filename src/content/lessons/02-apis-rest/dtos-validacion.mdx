@@ -1,0 +1,275 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaDTO } from '../../../components/interactive/DiagramaDTO'
+
+Imaginate que tenés una entidad `User` con los campos `id`, `email`, `name` y `passwordHash`. Si desde un controller devolvés esa entidad directamente, el campo `passwordHash` va al JSON de la respuesta. Siempre. Para todos los clientes.
+
+No es un bug — es el comportamiento esperado. El problema es de diseño: exponer la entidad JPA directamente en la API acopla el contrato público de tu API a la estructura interna de tu base de datos. Cualquier columna que agregues a la tabla puede terminar visible afuera. Cualquier cambio en la entidad puede romper a los clientes.
+
+La solución es un <Term definition="Data Transfer Object: un objeto simple cuyo único propósito es transportar datos entre capas. No tiene lógica de negocio ni anotaciones de persistencia — solo define la forma exacta de lo que la API recibe o devuelve.">DTO</Term>.
+
+<DiagramaDTO />
+
+## Qué es un DTO y por qué importa
+
+Un DTO es un objeto que modela exactamente lo que tu API recibe o devuelve — nada más, nada menos. No es una entidad JPA, no tiene `@Column`, no conoce la base de datos. Su único trabajo es definir el contrato entre tu API y el mundo exterior.
+
+Con Java records, un DTO de respuesta se escribe en tres líneas:
+
+```java
+// Lo que la API devuelve — solo lo que el cliente necesita ver
+public record UserResponse(
+    Long id,
+    String email,
+    String name
+) {}
+```
+
+```java
+// Lo que la API recibe al crear un usuario — la forma del request
+public record CreateUserRequest(
+    String email,
+    String name,
+    String password
+) {}
+```
+
+Dos DTOs distintos para dos direcciones distintas. El de request recibe la password en texto plano para hashearla; el de response nunca la devuelve. Esa asimetría es intencional y correcta.
+
+En el controller, mapeás entre DTO y entidad explícitamente:
+
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @GetMapping("/{id}")
+    public UserResponse getById(@PathVariable Long id) {
+        User user = userService.findById(id);
+        return new UserResponse(user.getId(), user.getEmail(), user.getName());
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public UserResponse create(@RequestBody CreateUserRequest request) {
+        User user = userService.create(request.email(), request.name(), request.password());
+        return new UserResponse(user.getId(), user.getEmail(), user.getName());
+    }
+}
+```
+
+El mapeo es explícito — y eso es bueno. Sabés exactamente qué datos cruzan la frontera de tu API en cada dirección.
+
+## Bean Validation — validar lo que entra
+
+Que el DTO defina la forma del request no significa que el contenido sea válido. Un `email` puede llegar vacío, una `password` de un carácter, un precio negativo. Sin validación, eso llega a tu lógica de negocio y el error aparece tarde, lejos del origen, con un mensaje críptico.
+
+**Bean Validation** es el estándar de Java para declarar reglas de validación directo en el objeto. Primero, el starter (no viene incluido en `spring-boot-starter-web`):
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-validation</artifactId>
+</dependency>
+```
+
+Después, las restricciones sobre el DTO:
+
+```java
+public record CreateUserRequest(
+
+    @NotBlank(message = "El email es requerido")
+    @Email(message = "El formato del email no es válido")
+    String email,
+
+    @NotBlank(message = "El nombre es requerido")
+    @Size(min = 2, max = 100, message = "El nombre debe tener entre 2 y 100 caracteres")
+    String name,
+
+    @NotBlank(message = "La contraseña es requerida")
+    @Size(min = 8, message = "La contraseña debe tener al menos 8 caracteres")
+    String password
+
+) {}
+```
+
+Y en el controller, `@Valid` le dice a Spring que ejecute esas validaciones antes de que el método corra:
+
+```java
+@PostMapping
+@ResponseStatus(HttpStatus.CREATED)
+public UserResponse create(@Valid @RequestBody CreateUserRequest request) {
+    // Si llegamos acá, request ya pasó todas las validaciones
+    User user = userService.create(request.email(), request.name(), request.password());
+    return new UserResponse(user.getId(), user.getEmail(), user.getName());
+}
+```
+
+Si alguna validación falla, Spring lanza `MethodArgumentNotValidException` y devuelve automáticamente un `400 Bad Request`. No llegás al service, no llegás a la base de datos — el problema se corta en la entrada.
+
+## Las anotaciones de validación más usadas
+
+```java
+public record ProductRequest(
+
+    @NotNull
+    Long categoryId,              // no puede ser null
+
+    @NotBlank
+    String name,                  // no puede ser null ni string vacío ni solo espacios
+
+    @Size(min = 10, max = 500)
+    String description,           // largo del string
+
+    @DecimalMin("0.01")
+    @DecimalMax("999999.99")
+    BigDecimal price,             // rango para decimales
+
+    @Min(0)
+    @Max(10000)
+    int stock,                    // rango para enteros
+
+    @Email
+    String contactEmail,          // formato de email
+
+    @Pattern(regexp = "^[A-Z]{2,5}$", message = "El código debe tener entre 2 y 5 letras mayúsculas")
+    String code                   // regex personalizado
+
+) {}
+```
+
+La diferencia entre `@NotNull` y `@NotBlank` es sutil pero importante: `@NotNull` rechaza `null` pero acepta un string vacío `""`. `@NotBlank` rechaza `null`, `""` y `"   "` (solo espacios). Para strings, casi siempre querés `@NotBlank`.
+
+## Validaciones que el estándar no cubre
+
+A veces las reglas de negocio son demasiado específicas para las anotaciones built-in. ¿Que el username no tenga palabras reservadas del sistema? ¿Que la fecha de inicio sea anterior a la de fin? Para eso podés crear tu propia anotación:
+
+```java
+// 1. Declarás la anotación
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = UniqueEmailValidator.class)
+public @interface UniqueEmail {
+    String message() default "Este email ya está registrado";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+
+// 2. Implementás la lógica
+@Component
+public class UniqueEmailValidator implements ConstraintValidator<UniqueEmail, String> {
+
+    private final IUserRepository userRepository;
+
+    public UniqueEmailValidator(IUserRepository userRepository) {
+        this.userRepository = userRepository;
+    }
+
+    @Override
+    public boolean isValid(String email, ConstraintValidatorContext context) {
+        if (email == null) return true; // @NotBlank se encarga del null
+        return !userRepository.existsByEmail(email);
+    }
+}
+```
+
+```java
+// 3. La usás como cualquier otra anotación
+public record CreateUserRequest(
+    @NotBlank @Email @UniqueEmail String email,
+    @NotBlank @Size(min = 2) String name,
+    @NotBlank @Size(min = 8) String password
+) {}
+```
+
+Spring inyecta dependencias en el validador automáticamente — por eso `UniqueEmailValidator` puede recibir el `IUserRepository` por constructor. Podés hacer consultas a la base de datos, llamar a servicios externos, lo que necesites.
+
+## Autoevaluación
+
+<Quiz
+  lessonId="dtos-validacion"
+  questions={[
+    {
+      id: "q1",
+      question: "¿Por qué es problemático exponer la entidad JPA directamente en la respuesta de la API?",
+      options: [
+        "Porque JPA no puede serializar objetos a JSON sin configuración extra",
+        "Porque acopla el contrato público de la API a la estructura interna de la base de datos, pudiendo exponer campos sensibles",
+        "Porque las entidades JPA no son compatibles con @RestController",
+        "Porque genera un NullPointerException si algún campo es null"
+      ],
+      correctIndex: 1,
+      explanation: "Exponer la entidad directamente acopla la API a la DB: cualquier columna interna (como passwordHash) puede quedar visible al cliente, y cualquier cambio en el esquema de la tabla puede romper el contrato con los consumidores de la API. El DTO actúa como una capa de aislamiento deliberada."
+    },
+    {
+      id: "q2",
+      question: "¿Cuál es la diferencia entre @NotNull y @NotBlank?",
+      options: [
+        "Son equivalentes — ambas rechazan null y strings vacíos",
+        "@NotNull valida solo tipos primitivos; @NotBlank valida solo Strings",
+        "@NotNull rechaza null pero acepta strings vacíos; @NotBlank rechaza null, strings vacíos y strings con solo espacios",
+        "@NotBlank es una anotación de Spring; @NotNull es del estándar Jakarta"
+      ],
+      correctIndex: 2,
+      explanation: "@NotNull solo garantiza que el valor no sea null — un string vacío '' pasa la validación. @NotBlank es más estricto: rechaza null, '' y '   ' (solo espacios en blanco). Para campos de texto en una API, casi siempre querés @NotBlank."
+    },
+    {
+      id: "q3",
+      question: "¿Qué pasa si un request llega con datos inválidos a un método anotado con @Valid?",
+      options: [
+        "Spring ejecuta el método igualmente y los campos inválidos quedan null",
+        "Spring lanza MethodArgumentNotValidException y devuelve automáticamente un 400 Bad Request",
+        "Spring lanza una excepción 500 Internal Server Error",
+        "La validación se ignora — hay que validar manualmente dentro del método"
+      ],
+      correctIndex: 1,
+      explanation: "@Valid le dice a Spring que ejecute Bean Validation antes de que el método corra. Si alguna restricción falla, Spring lanza MethodArgumentNotValidException y devuelve un 400 Bad Request automáticamente. El método del controller nunca llega a ejecutarse — el error se corta en la entrada."
+    }
+  ]}
+/>
+
+<Glossary
+  terms={[
+    {
+      term: "DTO (Data Transfer Object)",
+      definition: "Objeto cuyo único propósito es transportar datos entre capas o sistemas. No tiene lógica de negocio ni anotaciones de persistencia. Define exactamente qué forma tienen los datos que la API recibe o devuelve."
+    },
+    {
+      term: "Bean Validation",
+      definition: "Estándar de Jakarta (antes Java EE) para declarar restricciones de validación sobre objetos usando anotaciones. Spring lo integra a través de spring-boot-starter-validation y lo aplica automáticamente con @Valid."
+    },
+    {
+      term: "@Valid",
+      definition: "Anotación que le dice a Spring que ejecute Bean Validation sobre el parámetro anotado antes de que el método del controller corra. Si alguna restricción falla, Spring responde con 400 Bad Request sin invocar el método."
+    },
+    {
+      term: "@NotBlank",
+      definition: "Restricción de Bean Validation que rechaza null, strings vacíos ('') y strings con solo espacios en blanco ('   '). Para campos de texto en requests HTTP es preferible a @NotNull, que solo rechaza null."
+    },
+    {
+      term: "@NotNull",
+      definition: "Restricción que rechaza valores null. A diferencia de @NotBlank, acepta strings vacíos. Útil para tipos no-String (Long, Integer, Boolean) o cuando el string vacío tiene un significado válido."
+    },
+    {
+      term: "@Size",
+      definition: "Restricción que valida el largo de un String o el tamaño de una colección. Acepta min y max como atributos. Ejemplo: @Size(min=2, max=100) rechaza strings de menos de 2 o más de 100 caracteres."
+    },
+    {
+      term: "@Email",
+      definition: "Restricción que valida que el valor tenga formato de email (usuario@dominio.tld). No verifica que el email exista — solo valida el formato."
+    },
+    {
+      term: "@Pattern",
+      definition: "Restricción que valida el valor contra una expresión regular. Permite validar formatos específicos que las otras anotaciones no cubren: códigos, números de documento, formatos personalizados."
+    },
+    {
+      term: "MethodArgumentNotValidException",
+      definition: "Excepción que lanza Spring cuando @Valid detecta errores de validación en un @RequestBody. Spring la convierte automáticamente en una respuesta 400 Bad Request. Se puede capturar con @ControllerAdvice para personalizar el formato del error."
+    },
+    {
+      term: "ConstraintValidator",
+      definition: "Interfaz de Bean Validation que implementás para crear validaciones personalizadas. Spring inyecta dependencias en las implementaciones, lo que permite acceder a repositorios o servicios dentro de la lógica de validación."
+    }
+  ]}
+/>

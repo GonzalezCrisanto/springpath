@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useParams, Link } from 'react-router'
 import { tracks } from '../content/tracks'
 import { loadLesson } from '../lib/lessonLoader'
@@ -8,6 +9,10 @@ import { useProgress } from '../hooks/useProgress'
 export function LessonPage() {
   const { trackId, lessonId } = useParams<{ trackId: string; lessonId: string }>()
   const { isComplete } = useProgress()
+
+  useEffect(() => {
+    document.querySelector('main')?.scrollTo({ top: 0 })
+  }, [trackId, lessonId])
 
   const track = tracks.find((t) => t.id === trackId)
   const lesson = track?.lessons.find((l) => l.id === lessonId)

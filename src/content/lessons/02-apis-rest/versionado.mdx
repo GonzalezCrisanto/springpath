@@ -1,0 +1,213 @@
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+
+Tu API tiene clientes reales. Un frontend, una app mobile, quizás un tercero que integró contra vos. Hoy necesitás cambiar el formato de una respuesta — renombrar un campo, reestructurar un objeto, eliminar algo que quedó mal diseñado.
+
+Si cambiás directamente, rompés a todos los clientes que ya existen. Si no cambiás, cargás con ese diseño malo para siempre.
+
+El versionado de APIs es el mecanismo que te permite evolucionar el contrato sin romper lo que ya está en producción.
+
+## Las cuatro estrategias
+
+No existe "la estrategia correcta" — existen tradeoffs. Estas son las cuatro opciones con sus consecuencias reales.
+
+### 1. URL path (la más común)
+
+La versión va en el path:
+
+```
+GET /api/v1/products
+GET /api/v2/products
+```
+
+En Spring, lo implementás con un prefijo en el `@RequestMapping`:
+
+```java
+@RestController
+@RequestMapping("/api/v1/products")
+public class ProductControllerV1 {
+
+    @GetMapping("/{id}")
+    public ProductResponseV1 getById(@PathVariable Long id) {
+        return productService.findByIdV1(id);
+    }
+}
+
+@RestController
+@RequestMapping("/api/v2/products")
+public class ProductControllerV2 {
+
+    @GetMapping("/{id}")
+    public ProductResponseV2 getById(@PathVariable Long id) {
+        return productService.findByIdV2(id);
+    }
+}
+```
+
+**Pros**: simple, visible, cacheable, fácil de probar en el browser, fácil de documentar.
+
+**Contras**: la versión técnicamente no es parte del recurso — `/products` identifica el recurso, no `/v2/products`. Algunos puristas de REST lo ven como una violación semántica.
+
+En la práctica, es la estrategia más adoptada. GitHub, Stripe, Twitter — todos usan path versioning.
+
+### 2. Request header
+
+La versión va en un header customizado:
+
+```
+GET /api/products
+X-API-Version: 2
+```
+
+```java
+@RestController
+@RequestMapping("/api/products")
+public class ProductController {
+
+    @GetMapping(value = "/{id}", headers = "X-API-Version=1")
+    public ProductResponseV1 getByIdV1(@PathVariable Long id) {
+        return productService.findByIdV1(id);
+    }
+
+    @GetMapping(value = "/{id}", headers = "X-API-Version=2")
+    public ProductResponseV2 getByIdV2(@PathVariable Long id) {
+        return productService.findByIdV2(id);
+    }
+}
+```
+
+**Pros**: el URL queda limpio, semánticamente más correcto.
+
+**Contras**: no podés probar desde el browser sin herramientas, más difícil de descubrir para nuevos consumidores, se complica con proxies y caché.
+
+### 3. Query parameter
+
+La versión va como parámetro:
+
+```
+GET /api/products?version=2
+```
+
+```java
+@GetMapping(value = "/{id}", params = "version=1")
+public ProductResponseV1 getByIdV1(@PathVariable Long id) { ... }
+
+@GetMapping(value = "/{id}", params = "version=2")
+public ProductResponseV2 getByIdV2(@PathVariable Long id) { ... }
+```
+
+**Pros**: fácil de probar, fácil de hacer opcional (default a la última versión).
+
+**Contras**: los query params son para filtrado, no para identificar el contrato. Mezclás dos conceptos distintos en el mismo lugar.
+
+### 4. Media type / Accept header
+
+La versión se negocia via el header `Accept`:
+
+```
+GET /api/products/42
+Accept: application/vnd.myapp.v2+json
+```
+
+```java
+@GetMapping(value = "/{id}", produces = "application/vnd.myapp.v1+json")
+public ProductResponseV1 getByIdV1(@PathVariable Long id) { ... }
+
+@GetMapping(value = "/{id}", produces = "application/vnd.myapp.v2+json")
+public ProductResponseV2 getByIdV2(@PathVariable Long id) { ... }
+```
+
+**Pros**: purismo REST total — usás HTTP tal como fue diseñado, content negotiation incluido.
+
+**Contras**: difícil de descubrir, difícil de documentar, complica la integración con Swagger UI, prácticamente nadie lo usa fuera de APIs muy grandes con equipos dedicados.
+
+## El soporte nativo de Spring (desde 6.2)
+
+Spring Framework 6.2 introdujo soporte nativo para versionado con el atributo `version` en `@RequestMapping`. Necesitás habilitarlo en la configuración:
+
+```java
+@Configuration
+@EnableWebMvc
+public class WebConfig implements WebMvcConfigurer {
+
+    @Override
+    public void configureApiVersioning(ApiVersionConfigurer configurer) {
+        configurer.useRequestHeader("X-API-Version");
+        // o: configurer.useUrlPath()
+        // o: configurer.useRequestParam("version")
+    }
+}
+```
+
+Y después en los controllers:
+
+```java
+@RestController
+@RequestMapping("/api/products")
+public class ProductController {
+
+    @GetMapping(value = "/{id}", version = "1")
+    public ProductResponseV1 getByIdV1(@PathVariable Long id) { ... }
+
+    @GetMapping(value = "/{id}", version = "2+")  // v2 y todo lo que venga después
+    public ProductResponseV2 getByIdV2(@PathVariable Long id) { ... }
+}
+```
+
+El `2+` es la parte interesante: el método cubre v2 y cualquier versión superior que no tenga un match más específico. Cuando agregues v3, solo agregás el método de v3 — los clientes en v2 siguen funcionando sin cambios.
+
+## Cuál elegir
+
+Para la mayoría de los proyectos: **URL path**.
+
+Es simple, visible, cacheable, y todos lo entienden a primera vista — tu equipo, los consumidores, las herramientas de documentación. El argumento semántico en contra es válido pero tiene poco impacto práctico.
+
+Excepciones donde vale la pena considerar otra cosa:
+- **APIs internas** entre microservicios propios → header versioning es razonable
+- **APIs públicas masivas** con clientes muy sofisticados → media type si tenés el equipo para mantenerlo
+
+## Cuándo versionar
+
+El versionado tiene un costo: mantener dos versiones del mismo endpoint en paralelo es trabajo. Evitalo cuando podés.
+
+Cambios que **no** requieren nueva versión:
+- Agregar campos nuevos opcionales a la respuesta (los clientes ignoran lo que no conocen)
+- Agregar endpoints nuevos
+- Deprecar (avisando) sin eliminar
+
+Cambios que **sí** requieren nueva versión:
+- Eliminar campos de la respuesta
+- Cambiar el tipo de un campo existente
+- Cambiar la semántica de un campo (mismo nombre, significado distinto)
+- Reestructurar el JSON de forma incompatible
+
+La regla práctica: si un cliente existente va a romperse, versioná. Si no, no hace falta.
+
+<Glossary
+  terms={[
+    {
+      term: "Versionado de API",
+      definition: "Mecanismo que permite evolucionar el contrato de una API (agregar, modificar o eliminar campos y endpoints) sin romper a los clientes que ya consumen versiones anteriores. Permite mantener múltiples versiones del contrato en paralelo."
+    },
+    {
+      term: "Breaking change",
+      definition: "Cambio en una API que rompe la compatibilidad con clientes existentes: eliminar campos, cambiar tipos, reestructurar el JSON, cambiar la semántica de un campo. Cualquier breaking change requiere una nueva versión de la API."
+    },
+    {
+      term: "URL path versioning",
+      definition: "Estrategia que incluye la versión en el path de la URL: /api/v1/products, /api/v2/products. Es la estrategia más adoptada en producción por su simplicidad, visibilidad y compatibilidad con caché y herramientas de documentación."
+    },
+    {
+      term: "Header versioning",
+      definition: "Estrategia que pasa la versión en un header HTTP customizado (ej: X-API-Version: 2). Mantiene el URL limpio pero complica el descubrimiento por parte de los consumidores y la compatibilidad con proxies y caché."
+    },
+    {
+      term: "Content negotiation",
+      definition: "Mecanismo HTTP donde el cliente declara los formatos que acepta (header Accept) y el servidor responde con el más adecuado. La estrategia de media type versioning lo usa para negociar la versión del contrato junto con el formato de la respuesta."
+    },
+    {
+      term: "ApiVersionConfigurer",
+      definition: "Componente de Spring MVC (desde 6.2) que configura la estrategia de versionado nativa del framework. Permite usar el atributo version en @RequestMapping con soporte para versiones exactas (\"2\") y versiones baseline (\"2+\")."
+    }
+  ]}
+/>

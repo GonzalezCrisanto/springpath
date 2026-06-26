@@ -1,0 +1,201 @@
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+
+Construiste una API REST. Los endpoints responden, la validación funciona, los errores tienen formato consistente. Ahora alguien del equipo de frontend te pregunta: "¿cómo sé qué endpoints hay, qué reciben y qué devuelven?"
+
+La respuesta honesta, sin documentación, es: "mirá el código". Eso no escala. Cuando el equipo crece, cuando integrás con terceros, o cuando volvés a tu propia API tres meses después, necesitás documentación. Y la documentación que se escribe a mano siempre termina desactualizada.
+
+<Term definition="Especificación estándar (antes llamada Swagger) para describir APIs REST de forma legible por máquinas. Define en JSON o YAML los endpoints, parámetros, respuestas, esquemas y métodos de autenticación de una API.">OpenAPI</Term> resuelve eso: la documentación vive con el código y se genera automáticamente.
+
+## Agregar SpringDoc en dos minutos
+
+La librería que integra OpenAPI con Spring Boot se llama **SpringDoc**. Una dependencia y listo:
+
+```xml
+<dependency>
+    <groupId>org.springdoc</groupId>
+    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+    <version>2.8.17</version>
+</dependency>
+```
+
+Sin configuración adicional, Spring Boot arranca y ya tenés disponibles:
+
+- **`/swagger-ui.html`** — interfaz visual interactiva donde podés explorar y probar los endpoints
+- **`/v3/api-docs`** — la especificación OpenAPI en JSON (lo que consumen otras herramientas)
+- **`/v3/api-docs.yaml`** — la misma especificación en YAML
+
+SpringDoc escanea todos tus `@RestController` y genera la documentación automáticamente a partir de las anotaciones que ya tenés — `@GetMapping`, `@PostMapping`, `@RequestBody`, `@PathVariable`, `@RequestParam`. Sin hacer nada más, ya tenés algo útil.
+
+## Documentar con anotaciones
+
+La documentación generada automáticamente es correcta pero genérica. Las anotaciones de OpenAPI te permiten agregar contexto específico:
+
+```java
+@RestController
+@RequestMapping("/api/products")
+@Tag(name = "Products", description = "Gestión del catálogo de productos")
+public class ProductController {
+
+    @Operation(
+        summary = "Obtener producto por ID",
+        description = "Retorna un producto si existe. Lanza 404 si no se encuentra."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Producto encontrado"),
+        @ApiResponse(responseCode = "404", description = "Producto no encontrado",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+    })
+    @GetMapping("/{id}")
+    public ProductResponse getById(
+        @Parameter(description = "ID del producto a buscar", example = "42")
+        @PathVariable Long id
+    ) {
+        return productService.findById(id);
+    }
+
+    @Operation(summary = "Crear nuevo producto")
+    @ApiResponse(responseCode = "201", description = "Producto creado")
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public ProductResponse create(@Valid @RequestBody CreateProductRequest request) {
+        return productService.create(request);
+    }
+}
+```
+
+`@Tag` agrupa los endpoints en la UI. `@Operation` documenta el método. `@ApiResponse` describe cada posible respuesta. `@Parameter` enriquece los parámetros individuales.
+
+## Documentar los DTOs con `@Schema`
+
+Los DTOs también se pueden documentar para que Swagger UI muestre descripciones y ejemplos de cada campo:
+
+```java
+@Schema(description = "Datos para crear un nuevo producto")
+public record CreateProductRequest(
+
+    @Schema(description = "Nombre del producto", example = "Laptop ThinkPad X1")
+    @NotBlank
+    String name,
+
+    @Schema(description = "Precio en USD", example = "999.99")
+    @DecimalMin("0.01")
+    BigDecimal price,
+
+    @Schema(description = "Stock disponible", example = "50")
+    @Min(0)
+    int stock
+
+) {}
+```
+
+## Metadatos globales de la API
+
+Para configurar el título, versión y descripción general de la API, declarás un bean `OpenAPI`:
+
+```java
+@Configuration
+public class OpenApiConfig {
+
+    @Bean
+    public OpenAPI apiMetadata() {
+        return new OpenAPI()
+            .info(new Info()
+                .title("Product Catalog API")
+                .description("API REST para gestión del catálogo de productos")
+                .version("v1.0")
+                .contact(new Contact()
+                    .name("Backend Team")
+                    .email("backend@example.com")));
+    }
+}
+```
+
+## Documentar seguridad JWT
+
+Si tu API usa JWT, necesitás declarar el esquema de seguridad para que Swagger UI muestre el campo "Authorize" y permita enviar el token en las pruebas:
+
+```java
+@Bean
+public OpenAPI apiMetadata() {
+    return new OpenAPI()
+        .info(new Info().title("Product Catalog API").version("v1.0"))
+        .components(new Components()
+            .addSecuritySchemes("bearer-jwt",
+                new SecurityScheme()
+                    .type(SecurityScheme.Type.HTTP)
+                    .scheme("bearer")
+                    .bearerFormat("JWT")
+                    .description("Token JWT obtenido al autenticarse en /auth/login")))
+        .addSecurityItem(new SecurityRequirement().addList("bearer-jwt"));
+}
+```
+
+Con `addSecurityItem` a nivel global, todos los endpoints requieren el token. Si alguno es público, lo marcás explícitamente:
+
+```java
+@Operation(security = {})  // sobreescribe el requerimiento global — endpoint público
+@PostMapping("/auth/login")
+public AuthResponse login(@RequestBody LoginRequest request) { ... }
+```
+
+## Desactivar en producción
+
+Swagger UI no debería estar accesible en producción — expone la estructura completa de tu API. Lo controlás por perfil:
+
+```yaml
+# application-prod.yml
+springdoc:
+  swagger-ui:
+    enabled: false
+  api-docs:
+    enabled: false
+```
+
+```yaml
+# application-dev.yml
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+```
+
+En desarrollo está disponible, en producción desaparece. Sin tocar código.
+
+<Glossary
+  terms={[
+    {
+      term: "OpenAPI",
+      definition: "Especificación estándar (antes Swagger Specification) para describir APIs REST. Define en JSON o YAML los endpoints, parámetros, esquemas de datos y métodos de autenticación. Es legible por máquinas, lo que permite generar documentación, clientes, y tests automáticamente."
+    },
+    {
+      term: "SpringDoc",
+      definition: "Librería (springdoc-openapi) que integra la especificación OpenAPI con Spring Boot. Escanea los @RestController en runtime y genera automáticamente la especificación OpenAPI y despliega Swagger UI."
+    },
+    {
+      term: "Swagger UI",
+      definition: "Interfaz web visual generada automáticamente por SpringDoc. Permite explorar los endpoints documentados, ver esquemas de request/response, y ejecutar llamadas HTTP de prueba directamente desde el browser."
+    },
+    {
+      term: "@Operation",
+      definition: "Anotación de OpenAPI para documentar un método de controller. Permite definir un summary (título corto) y una description (explicación detallada) que aparecen en Swagger UI."
+    },
+    {
+      term: "@ApiResponse / @ApiResponses",
+      definition: "Documenta las posibles respuestas HTTP de un endpoint: código de status, descripción y esquema del body de respuesta. Permite especificar múltiples respuestas posibles (200, 400, 404, 500) con sus respectivos ejemplos."
+    },
+    {
+      term: "@Schema",
+      definition: "Documenta un DTO o sus campos individuales en la especificación OpenAPI. Permite agregar description y example que aparecen en Swagger UI cuando se inspecciona el esquema del request o response."
+    },
+    {
+      term: "@Tag",
+      definition: "Agrupa los endpoints de un controller bajo una categoría nombrada en Swagger UI. Todos los @GetMapping, @PostMapping, etc. del controller aparecen juntos bajo ese tag en la documentación."
+    },
+    {
+      term: "SecurityScheme",
+      definition: "Componente de OpenAPI que declara el método de autenticación de la API. Para JWT se declara de tipo HTTP con scheme 'bearer' y bearerFormat 'JWT', lo que habilita el botón 'Authorize' en Swagger UI para incluir el token en las pruebas."
+    }
+  ]}
+/>

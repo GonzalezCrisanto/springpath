@@ -46,7 +46,11 @@ function TrackSection({ track, activeTrackId, activeLessonId, onLinkClick }: Tra
     <div>
       <button
         onClick={() => setOpen((prev) => !prev)}
-        className="w-full flex items-center justify-between gap-2 px-4 py-2 text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-elevated transition-colors text-left"
+        className={`w-full flex items-center justify-between gap-2 px-4 py-2 text-sm font-medium hover:text-text-primary hover:bg-elevated transition-colors text-left border-l-2 ${
+          isActiveTrack
+            ? "border-accent text-text-primary"
+            : "border-transparent text-text-secondary"
+        }`}
       >
         <Link
           to={`/track/${track.id}`}

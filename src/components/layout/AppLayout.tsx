@@ -9,7 +9,7 @@ export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div className="min-h-screen flex flex-col bg-page text-text-primary">
+    <div className="h-screen flex flex-col bg-page text-text-primary">
       <Navbar onMenuToggle={() => setSidebarOpen((prev) => !prev)} />
 
       <div className="flex flex-1 overflow-hidden">

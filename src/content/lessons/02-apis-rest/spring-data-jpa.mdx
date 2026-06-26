@@ -1,0 +1,278 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaJPA } from '../../../components/interactive/DiagramaJPA'
+
+Antes de Spring Data JPA, acceder a una base de datos en Java significaba abrir conexiones manualmente, escribir SQL como strings, ejecutar `PreparedStatement`, parsear el `ResultSet` fila por fila, y cerrar todo en un bloque `finally` para no dejar conexiones abiertas. Para cada consulta. El mismo boilerplate, repetido hasta el infinito.
+
+JPA vino a mapear objetos Java a tablas relacionales. Spring Data JPA fue un paso más: te permite declarar una interfaz con los métodos que necesitás, y Spring genera la implementación completa en runtime. Sin SQL, sin `ResultSet`, sin boilerplate.
+
+<DiagramaJPA />
+
+## La entidad — mapear una clase a una tabla
+
+Una <Term definition="Clase Java anotada con @Entity que Spring Data JPA mapea a una tabla de la base de datos. Cada instancia de la entidad representa una fila de esa tabla.">entidad</Term> es una clase Java que representa una tabla. Las anotaciones le dicen a JPA cómo hacer el mapeo:
+
+```java
+@Entity
+@Table(name = "products")
+public class Product {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, length = 200)
+    private String name;
+
+    @Column(nullable = false, precision = 10, scale = 2)
+    private BigDecimal price;
+
+    @Column(nullable = false)
+    private int stock;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "category_id")
+    private Category category;
+
+    // constructores, getters, setters
+}
+```
+
+`@GeneratedValue(strategy = GenerationType.IDENTITY)` le dice a JPA que la base de datos genera el ID automáticamente — el equivalente al `AUTO_INCREMENT` de MySQL o el `SERIAL` de PostgreSQL. Es la estrategia más común.
+
+`@Column` es opcional cuando los defaults alcancen — JPA mapea el campo al mismo nombre de columna en snake_case. Lo usás cuando necesitás agregar restricciones (`nullable`, `length`) o cuando el nombre de la columna difiere del nombre del campo.
+
+## El repositorio — operaciones sin implementación
+
+Acá viene lo interesante. Para persistir y consultar `Product`, declarás una interfaz que extiende <Term definition="Interfaz de Spring Data JPA que extiende CrudRepository y PagingAndSortingRepository. Provee métodos CRUD completos más operaciones de paginación, ordenamiento y flush del contexto JPA.">JpaRepository</Term>:
+
+```java
+public interface IProductRepository extends JpaRepository<Product, Long> {
+    // Acá van tus consultas personalizadas
+    // Los métodos básicos ya vienen incluidos
+}
+```
+
+Solo con eso — sin ninguna clase que implemente la interfaz — ya tenés disponibles:
+
+```java
+// Guardar (insert si no tiene id, update si ya tiene)
+Product saved = repository.save(product);
+
+// Buscar por ID → Optional para manejar el caso "no existe"
+Optional<Product> found = repository.findById(42L);
+
+// Todos los registros
+List<Product> all = repository.findAll();
+
+// ¿Existe?
+boolean exists = repository.existsById(42L);
+
+// Eliminar
+repository.deleteById(42L);
+
+// Cuántos hay
+long total = repository.count();
+```
+
+Spring genera la implementación en runtime usando proxies dinámicos. La interfaz es el contrato; Spring escribe el código.
+
+## Query methods — consultas por nombre de método
+
+Y acá viene lo lindo: podés agregar métodos a la interfaz siguiendo una convención de nombres, y Spring los traduce a consultas automáticamente.
+
+```java
+public interface IProductRepository extends JpaRepository<Product, Long> {
+
+    // SELECT * FROM products WHERE name = ?
+    List<Product> findByName(String name);
+
+    // SELECT * FROM products WHERE price > ?
+    List<Product> findByPriceGreaterThan(BigDecimal price);
+
+    // SELECT * FROM products WHERE name LIKE %?%
+    List<Product> findByNameContaining(String keyword);
+
+    // SELECT * FROM products WHERE category_id = ? AND stock > 0
+    List<Product> findByCategoryIdAndStockGreaterThan(Long categoryId, int minStock);
+
+    // SELECT * FROM products WHERE name LIKE ? ORDER BY price ASC
+    List<Product> findByNameContainingOrderByPriceAsc(String keyword);
+
+    // SELECT COUNT(*) FROM products WHERE category_id = ?
+    long countByCategoryId(Long categoryId);
+
+    // SELECT CASE WHEN COUNT(*) > 0 THEN TRUE ELSE FALSE FROM products WHERE email = ?
+    boolean existsByName(String name);
+}
+```
+
+La convención es `find/count/exists/delete` + `By` + nombre del campo + keyword opcional. Spring parsea el nombre del método y genera el JPQL correspondiente. Fijate que los keywords se encadenan: `findByCategoryIdAndStockGreaterThan` combina dos condiciones en el nombre.
+
+Los keywords más usados: `And`, `Or`, `Between`, `LessThan`, `GreaterThan`, `Containing` (LIKE %x%), `StartingWith`, `EndingWith`, `IgnoreCase`, `OrderBy`, `Distinct`.
+
+## `@Query` — cuando el nombre no alcanza
+
+Para consultas más complejas donde el nombre del método sería ilegible, usás `@Query` con <Term definition="Java Persistence Query Language: lenguaje de consultas de JPA similar a SQL pero que opera sobre entidades Java en lugar de tablas. 'SELECT p FROM Product p WHERE p.price > :price' es JPQL.">JPQL</Term>:
+
+```java
+public interface IProductRepository extends JpaRepository<Product, Long> {
+
+    // JPQL con parámetro nombrado
+    @Query("SELECT p FROM Product p WHERE p.price BETWEEN :min AND :max AND p.stock > 0")
+    List<Product> findAvailableInPriceRange(
+        @Param("min") BigDecimal min,
+        @Param("max") BigDecimal max
+    );
+
+    // SQL nativo (nativeQuery = true) cuando necesitás funciones específicas de la DB
+    @Query(value = "SELECT * FROM products WHERE MATCH(name, description) AGAINST(?1)", nativeQuery = true)
+    List<Product> fullTextSearch(String term);
+
+    // Modificación con @Modifying — para UPDATE y DELETE via @Query
+    @Modifying
+    @Query("UPDATE Product p SET p.stock = p.stock - :quantity WHERE p.id = :id")
+    int decrementStock(@Param("id") Long id, @Param("quantity") int quantity);
+}
+```
+
+Preferí los query methods por nombre para consultas simples — son más legibles y refactor-safe (si renombrás el campo Java, el IDE te avisa). Reservá `@Query` para consultas complejas, joins no triviales, o cuando necesitás SQL nativo.
+
+## Paginación
+
+Para listar recursos en producción siempre usás paginación — devolver miles de filas en un solo request no es una opción:
+
+```java
+public interface IProductRepository extends JpaRepository<Product, Long> {
+    Page<Product> findByCategory(Category category, Pageable pageable);
+}
+```
+
+```java
+// En el service o controller — page y size vienen del request (?page=0&size=20)
+Pageable pageRequest = PageRequest.of(page, size);
+Page<Product> page = repository.findByCategory(category, pageRequest);
+
+page.getContent();      // los 20 productos de esta página
+page.getTotalElements(); // total de registros que coinciden
+page.getTotalPages();    // cuántas páginas hay en total
+page.hasNext();          // ¿hay más páginas?
+```
+
+`Page<T>` hace automáticamente dos consultas: una para traer los datos y otra para contar el total. Si no necesitás el count, usás `Slice<T>` que solo pregunta si hay una página siguiente.
+
+## Un gotcha que te va a quemar tarde o temprano
+
+Las relaciones `@ManyToOne` y `@OneToMany` tienen un atributo `fetch` que define cuándo JPA trae los datos relacionados. El default depende del tipo de relación:
+
+- `@ManyToOne` → `FetchType.EAGER` por defecto — trae la entidad relacionada en la misma consulta
+- `@OneToMany` → `FetchType.LAZY` por defecto — la colección se carga cuando la accedés
+
+El problema con `EAGER` es que puede disparar consultas que no esperabas. Pedís 20 productos y JPA hace 21 consultas: una por los productos y una por cada categoría. Eso se llama el problema N+1.
+
+La práctica recomendada: siempre declarar `FetchType.LAZY` explícitamente en las relaciones y cargar lo que necesitás con `@Query` usando `JOIN FETCH`:
+
+```java
+@Entity
+public class Product {
+    @ManyToOne(fetch = FetchType.LAZY)  // explícito, nunca confiar en el default
+    @JoinColumn(name = "category_id")
+    private Category category;
+}
+```
+
+```java
+// Traer productos con su categoría en una sola consulta
+@Query("SELECT p FROM Product p JOIN FETCH p.category WHERE p.id = :id")
+Optional<Product> findByIdWithCategory(@Param("id") Long id);
+```
+
+## Autoevaluación
+
+<Quiz
+  lessonId="spring-data-jpa"
+  questions={[
+    {
+      id: "q1",
+      question: "¿Qué genera Spring a partir de una interfaz que extiende JpaRepository?",
+      options: [
+        "Una clase abstracta que el desarrollador debe completar",
+        "Un archivo SQL con las queries correspondientes",
+        "Una implementación completa en runtime con todas las operaciones CRUD y las query methods declaradas",
+        "Solo los métodos básicos — save, findById y delete"
+      ],
+      correctIndex: 2,
+      explanation: "Spring genera en runtime una implementación completa de la interfaz usando proxies dinámicos. Incluye todos los métodos heredados de JpaRepository (CRUD, paginación, ordenamiento) y las query methods personalizadas declaradas en la interfaz. No escribís ninguna clase de implementación."
+    },
+    {
+      id: "q2",
+      question: "¿Qué hace el método findByNameContainingOrderByPriceAsc(String keyword)?",
+      options: [
+        "Busca productos cuyo nombre sea exactamente igual a keyword, ordenados por precio ascendente",
+        "Busca productos cuyo nombre contenga keyword (LIKE %keyword%) y los ordena por precio ascendente",
+        "Busca productos que contengan keyword en cualquier campo y los ordena por nombre",
+        "Este método no es válido — los query methods no pueden combinar Containing con OrderBy"
+      ],
+      correctIndex: 1,
+      explanation: "Spring parsea el nombre del método: 'findBy' es el sujeto, 'Name' identifica el campo, 'Containing' genera un LIKE %keyword%, y 'OrderByPriceAsc' agrega ORDER BY price ASC. Los keywords se encadenan directamente en el nombre del método."
+    },
+    {
+      id: "q3",
+      question: "¿Cuál es el problema de usar FetchType.EAGER en una relación @ManyToOne?",
+      options: [
+        "EAGER no funciona con @ManyToOne — solo con @OneToMany",
+        "La entidad relacionada nunca se carga, lo que genera NullPointerExceptions",
+        "Puede disparar el problema N+1: al traer N entidades, JPA hace N consultas adicionales para cargar cada relación",
+        "Impide usar paginación con Pageable en ese repositorio"
+      ],
+      correctIndex: 2,
+      explanation: "Con EAGER, JPA carga la entidad relacionada en cada consulta. Si traés 20 productos y cada uno tiene una categoría EAGER, JPA ejecuta 1 consulta por los productos + 20 consultas por las categorías = 21 consultas. Ese es el problema N+1. La práctica es usar LAZY en todas las relaciones y cargar lo necesario con JOIN FETCH en @Query."
+    }
+  ]}
+/>
+
+<Glossary
+  terms={[
+    {
+      term: "@Entity",
+      definition: "Anotación que marca una clase Java como entidad JPA. Spring Data JPA la mapea a una tabla de la base de datos. Cada instancia representa una fila."
+    },
+    {
+      term: "@Id / @GeneratedValue",
+      definition: "@Id marca el campo como clave primaria. @GeneratedValue define la estrategia de generación: IDENTITY delega en la base de datos (AUTO_INCREMENT / SERIAL), la opción más común para MySQL y PostgreSQL."
+    },
+    {
+      term: "JpaRepository<T, ID>",
+      definition: "Interfaz de Spring Data JPA que provee CRUD completo, paginación y ordenamiento. Al extenderla, Spring genera automáticamente la implementación en runtime. T es el tipo de la entidad, ID es el tipo de su clave primaria."
+    },
+    {
+      term: "Query method",
+      definition: "Método declarado en una interfaz de repositorio cuyo nombre sigue una convención (findBy, countBy, existsBy + nombre de campo + keywords). Spring lo parsea y genera la consulta JPQL correspondiente automáticamente."
+    },
+    {
+      term: "@Query",
+      definition: "Anotación que permite definir una consulta JPQL o SQL nativo explícita sobre un método del repositorio. Se usa cuando el query method por nombre sería demasiado largo o la consulta requiere funcionalidades no cubiertas por los keywords."
+    },
+    {
+      term: "JPQL",
+      definition: "Java Persistence Query Language: lenguaje de consultas de JPA que opera sobre entidades Java en lugar de tablas SQL. 'SELECT p FROM Product p WHERE p.price > :price' es JPQL — Product es la clase Java, no la tabla."
+    },
+    {
+      term: "Pageable / Page<T>",
+      definition: "Pageable encapsula página, tamaño y orden de una consulta paginada. Page<T> contiene el resultado: los elementos de la página, el total de registros y el total de páginas. JpaRepository los soporta nativamente."
+    },
+    {
+      term: "FetchType.LAZY / EAGER",
+      definition: "Define cuándo JPA carga las entidades relacionadas. LAZY las carga solo cuando se accede a la propiedad. EAGER las carga junto con la consulta principal, lo que puede generar el problema N+1. La práctica es declarar siempre LAZY explícitamente."
+    },
+    {
+      term: "Problema N+1",
+      definition: "Antipatrón de performance: al traer N entidades con relaciones EAGER, JPA ejecuta 1 consulta principal + N consultas adicionales (una por cada entidad relacionada). Se resuelve con FetchType.LAZY y JOIN FETCH en @Query."
+    },
+    {
+      term: "@Modifying",
+      definition: "Anotación requerida junto con @Query cuando el JPQL es un UPDATE o DELETE. Le indica a Spring Data que la consulta modifica datos, no los consulta, y que debe manejar el contexto de persistencia correctamente."
+    }
+  ]}
+/>

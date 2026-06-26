@@ -1,0 +1,215 @@
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaErrorHandling } from '../../../components/interactive/DiagramaErrorHandling'
+
+Hacés `GET /products/999` y el producto no existe. ¿Qué devuelve tu API?
+
+Sin manejo de errores, Spring devuelve una página HTML con un stacktrace completo al cliente. O un `500 Internal Server Error` cuando debería ser un `404 Not Found`. El cliente — que puede ser un frontend en React o un servicio externo — recibe algo que no puede procesar y no le dice nada útil.
+
+El problema se complica cuando cada controller maneja sus errores a su manera: uno devuelve un string, otro un map, otro no maneja nada. Tres endpoints, tres formatos de error distintos. Eso no es una API — es un quilombo.
+
+<DiagramaErrorHandling />
+
+## `@ExceptionHandler` — capturar excepciones en un controller
+
+El primer mecanismo es `@ExceptionHandler`: un método dentro del controller que Spring invoca cuando ese controller lanza una excepción específica.
+
+```java
+@RestController
+@RequestMapping("/api/products")
+public class ProductController {
+
+    @GetMapping("/{id}")
+    public Product getById(@PathVariable Long id) {
+        return productService.findById(id)
+            .orElseThrow(() -> new ProductNotFoundException(id)); // lanza si no existe
+    }
+
+    // Spring intercepta la excepción antes de que llegue al cliente
+    @ExceptionHandler(ProductNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleNotFound(ProductNotFoundException ex) {
+        return new ErrorResponse("NOT_FOUND", ex.getMessage());
+    }
+}
+```
+
+Funciona, pero el problema es el alcance: este `@ExceptionHandler` solo cubre `ProductController`. Si `OrderController` también lanza `ProductNotFoundException`, necesitás duplicar el handler. Y si cambia el formato del error, cambiás en diez lugares.
+
+## `@RestControllerAdvice` — manejo global
+
+La solución es sacar los handlers a una clase aparte anotada con <Term definition="Anotación que combina @ControllerAdvice y @ResponseBody. Convierte la clase en un interceptor global de excepciones para todos los controllers de la aplicación. Equivale a @ControllerAdvice + @ResponseBody en cada método.">@RestControllerAdvice</Term>:
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ProductNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleNotFound(ProductNotFoundException ex) {
+        return new ErrorResponse("NOT_FOUND", ex.getMessage());
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleValidation(MethodArgumentNotValidException ex) {
+        String detail = ex.getBindingResult().getFieldErrors().stream()
+            .map(e -> e.getField() + ": " + e.getDefaultMessage())
+            .collect(Collectors.joining(", "));
+        return new ErrorResponse("VALIDATION_ERROR", detail);
+    }
+
+    @ExceptionHandler(Exception.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    public ErrorResponse handleGeneric(Exception ex) {
+        // Loggear ex acá — nunca expongas el mensaje al cliente en producción
+        return new ErrorResponse("INTERNAL_ERROR", "Ocurrió un error inesperado");
+    }
+}
+```
+
+Fijate en el orden: de más específico a más genérico. Spring elige el handler que más se acerca al tipo de la excepción lanzada — si no hay match específico, cae en el `Exception.class` genérico.
+
+## Definir un formato de error consistente
+
+Antes de los handlers, necesitás un tipo que represente el error. Un record es perfecto:
+
+```java
+public record ErrorResponse(
+    String code,     // código de error legible por máquina: "NOT_FOUND", "VALIDATION_ERROR"
+    String message   // mensaje legible por humanos
+) {}
+```
+
+Todos los endpoints de tu API ahora devuelven este mismo shape cuando algo falla. El frontend puede esperar siempre la misma estructura y manejar los errores de forma uniforme.
+
+Un diseño más completo puede incluir el timestamp y el path:
+
+```java
+public record ErrorResponse(
+    String code,
+    String message,
+    Instant timestamp,
+    String path
+) {
+    public static ErrorResponse of(String code, String message, HttpServletRequest request) {
+        return new ErrorResponse(code, message, Instant.now(), request.getRequestURI());
+    }
+}
+```
+
+## Excepciones de dominio con su status HTTP
+
+La práctica más limpia es crear excepciones propias que ya llevan el status HTTP que corresponde:
+
+```java
+// 404 cuando un recurso no existe
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public class ResourceNotFoundException extends RuntimeException {
+    public ResourceNotFoundException(String resource, Object id) {
+        super(resource + " con id " + id + " no encontrado");
+    }
+}
+
+// 409 cuando hay un conflicto de negocio
+@ResponseStatus(HttpStatus.CONFLICT)
+public class DuplicateResourceException extends RuntimeException {
+    public DuplicateResourceException(String message) {
+        super(message);
+    }
+}
+
+// 403 cuando el usuario no tiene permiso para una operación específica
+@ResponseStatus(HttpStatus.FORBIDDEN)
+public class InsufficientPermissionsException extends RuntimeException {
+    public InsufficientPermissionsException(String action) {
+        super("No tenés permiso para: " + action);
+    }
+}
+```
+
+Con `@ResponseStatus` en la excepción, ni siquiera necesitás declarar el status en el handler — Spring lo lee de la anotación automáticamente:
+
+```java
+@ExceptionHandler(ResourceNotFoundException.class)
+public ErrorResponse handleNotFound(ResourceNotFoundException ex) {
+    // Spring usa el @ResponseStatus(NOT_FOUND) de la excepción
+    return new ErrorResponse("NOT_FOUND", ex.getMessage());
+}
+```
+
+## Manejar los errores de validación con detalle
+
+Cuando `@Valid` falla, Spring lanza `MethodArgumentNotValidException`. Dentro tenés acceso a todos los errores de campo:
+
+```java
+@ExceptionHandler(MethodArgumentNotValidException.class)
+@ResponseStatus(HttpStatus.BAD_REQUEST)
+public ValidationErrorResponse handleValidation(MethodArgumentNotValidException ex) {
+    List<FieldError> fieldErrors = ex.getBindingResult().getFieldErrors().stream()
+        .map(e -> new FieldError(e.getField(), e.getDefaultMessage()))
+        .toList();
+
+    return new ValidationErrorResponse("VALIDATION_ERROR", fieldErrors);
+}
+
+public record ValidationErrorResponse(String code, List<FieldError> errors) {}
+public record FieldError(String field, String message) {}
+```
+
+Así el cliente recibe exactamente qué campo falló y por qué — no un mensaje genérico de error:
+
+```json
+{
+  "code": "VALIDATION_ERROR",
+  "errors": [
+    { "field": "email", "message": "El formato del email no es válido" },
+    { "field": "name",  "message": "El nombre es requerido" }
+  ]
+}
+```
+
+## Lo que nunca hacés en producción
+
+Dos reglas que aplican siempre:
+
+**Nunca exponés stacktraces al cliente.** Un stacktrace le revela al mundo la estructura interna de tu app — nombres de clases, librerías, rutas del sistema. Es información que un atacante puede usar. Loggéalo en el servidor, mandá un mensaje genérico al cliente.
+
+**Nunca devolvés `500` cuando el error es del cliente.** Si el request tiene un campo inválido, la respuesta es `400 Bad Request`. Si pide un recurso que no existe, es `404 Not Found`. Un `500` dice "el servidor rompió" — usalo solo cuando realmente rompió.
+
+<Glossary
+  terms={[
+    {
+      term: "@ExceptionHandler",
+      definition: "Anotación sobre un método que Spring invoca cuando el controller (o el advice) lanza la excepción especificada. El método recibe la excepción como argumento y retorna la respuesta de error."
+    },
+    {
+      term: "@RestControllerAdvice",
+      definition: "Combina @ControllerAdvice y @ResponseBody. Convierte la clase en un interceptor global de excepciones para todos los controllers de la aplicación. Los métodos anotados con @ExceptionHandler dentro de ella aplican globalmente."
+    },
+    {
+      term: "@ControllerAdvice",
+      definition: "Versión de @RestControllerAdvice para aplicaciones que renderizan vistas (Thymeleaf, etc.). Para APIs REST siempre usás @RestControllerAdvice, que incluye @ResponseBody implícitamente."
+    },
+    {
+      term: "MethodArgumentNotValidException",
+      definition: "Excepción que Spring lanza cuando @Valid detecta errores en un @RequestBody. Contiene la lista de todos los errores de campo a través de getBindingResult().getFieldErrors()."
+    },
+    {
+      term: "ErrorResponse (record)",
+      definition: "Tipo propio que define la forma del cuerpo de error de tu API. Al centralizar el formato en un record, todos los endpoints devuelven la misma estructura cuando algo falla — previsible para el cliente."
+    },
+    {
+      term: "@ResponseStatus",
+      definition: "Anotación que declara el status HTTP asociado a una excepción o a un método handler. Cuando se pone sobre una clase de excepción, Spring la usa automáticamente en el handler correspondiente."
+    },
+    {
+      term: "BindingResult",
+      definition: "Objeto que contiene los resultados de la validación de un objeto. En MethodArgumentNotValidException se accede a través de getBindingResult() y expone los errores por campo con getFieldErrors()."
+    },
+    {
+      term: "RuntimeException",
+      definition: "Clase base de Java para excepciones no verificadas. Las excepciones de dominio (ResourceNotFoundException, DuplicateResourceException) extienden RuntimeException para no obligar a declararlas en cada firma de método."
+    }
+  ]}
+/>
