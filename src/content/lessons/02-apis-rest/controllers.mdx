@@ -1,0 +1,247 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaDispatch } from '../../../components/interactive/DiagramaDispatch'
+
+Antes de Spring MVC, construir una API en Java significaba extender `HttpServlet` y gestionar el ruteo a mano. Algo así:
+
+```java
+@Override
+protected void service(HttpServletRequest req, HttpServletResponse res) {
+    String method = req.getMethod();
+    String path   = req.getPathInfo();
+
+    if ("GET".equals(method) && "/products".equals(path)) {
+        // listar productos
+    } else if ("GET".equals(method) && path.matches("/products/\\d+")) {
+        // obtener uno
+    } else if ("POST".equals(method) && "/products".equals(path)) {
+        // crear
+    } // ... y así para cada endpoint
+}
+```
+
+¿Lo ves? Un `if` por cada combinación de método + path. Con tres endpoints ya es incómodo. Con cincuenta, es un quilombo. Y el ruteo es solo el primer problema — todavía tenés que parsear el body, convertir parámetros, serializar la respuesta…
+
+Spring MVC resuelve todo eso con un patrón que se llama <Term definition="Patrón de diseño donde un único punto de entrada (el DispatcherServlet) recibe todos los requests y los delega al handler correcto. Elimina el ruteo manual y centraliza preocupaciones transversales como autenticación y manejo de errores.">Front Controller</Term>: un único servlet — el `DispatcherServlet` — que recibe todos los requests y los despacha al método correcto según las anotaciones. Sin un solo `if`.
+
+<DiagramaDispatch />
+
+## `@RestController` — declarar que esta clase maneja requests
+
+Un controller es una clase anotada con `@RestController`. Eso combina dos cosas:
+
+```java
+@RestController
+public class ProductController {
+
+    @GetMapping("/products")
+    public List<Product> listAll() {
+        return productService.findAll(); // Spring serializa esto a JSON automáticamente
+    }
+}
+```
+
+- `@Controller` registra la clase en el contenedor como handler de requests HTTP.
+- `@ResponseBody` le dice a Spring que el valor de retorno se escribe directamente en el cuerpo de la respuesta — no es el nombre de una vista a renderizar.
+
+`@RestController` es la combinación de las dos. La usás siempre que estés construyendo una API REST. `@Controller` solo lo vas a ver cuando renderizás templates del lado del servidor (Thymeleaf, por ejemplo).
+
+## `@RequestMapping` — conectar un método con un path y un verbo
+
+La anotación `@RequestMapping` es la que hace el trabajo. Puede ir a nivel de clase para un prefijo compartido, y a nivel de método para el sub-path y el verbo:
+
+```java
+@RestController
+@RequestMapping("/api/products")     // prefijo compartido por todos los métodos
+public class ProductController {
+
+    @GetMapping                      // GET  /api/products
+    public List<Product> listAll() { … }
+
+    @GetMapping("/{id}")             // GET  /api/products/42
+    public Product getById(@PathVariable Long id) { … }
+
+    @PostMapping                     // POST /api/products
+    @ResponseStatus(HttpStatus.CREATED)
+    public Product create(@RequestBody Product product) { … }
+
+    @PutMapping("/{id}")             // PUT  /api/products/42
+    public Product update(@PathVariable Long id, @RequestBody Product product) { … }
+
+    @DeleteMapping("/{id}")          // DELETE /api/products/42
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable Long id) { … }
+}
+```
+
+Fijate en los shortcuts: `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`. Son equivalentes a `@RequestMapping(method = RequestMethod.GET/POST/…)` pero mucho más legibles. Son la forma recomendada en la doc oficial — usá siempre los shortcuts.
+
+## La semántica de los verbos HTTP
+
+El protocolo define verbos con significado preciso. En una API bien diseñada esa semántica no es opcional — es parte del contrato con los clientes:
+
+| Verbo | Uso | ¿Idempotente? | ¿Lleva body? |
+|-------|-----|:-:|:-:|
+| `GET` | Leer un recurso | ✅ | No |
+| `POST` | Crear un recurso | ❌ | ✅ |
+| `PUT` | Reemplazar un recurso completo | ✅ | ✅ |
+| `PATCH` | Actualizar parcialmente | ❌ | ✅ |
+| `DELETE` | Eliminar un recurso | ✅ | No |
+
+¿Qué significa <Term definition="Una operación es idempotente si ejecutarla N veces tiene el mismo efecto que ejecutarla una sola vez. GET, PUT y DELETE son idempotentes. POST no lo es: dos POSTs iguales pueden crear dos recursos distintos.">idempotente</Term>? Que repetir la operación no cambia el resultado. `DELETE /products/42` dos veces deja el recurso igual de eliminado. `POST /products` dos veces crea dos productos distintos.
+
+Eso importa para los clientes: si un POST falla y no saben si llegó al servidor, ¿lo reintentán? Con un PUT, sí pueden — con un POST, tienen que chequear primero.
+
+## Extraer datos del request
+
+### `@PathVariable` — variables en el path
+
+```java
+// GET /products/42  →  id = 42
+@GetMapping("/{id}")
+public Product getById(@PathVariable Long id) {
+    return productService.findById(id);
+}
+```
+
+Spring extrae el segmento `42` de la URL y lo convierte al tipo `Long` declarado en el parámetro. Si no puede convertir — por ejemplo, `GET /products/abc` — lanza un `400 Bad Request` automáticamente. No tenés que validar eso vos.
+
+### `@RequestParam` — query parameters
+
+```java
+// GET /products?category=electronics&page=0&size=20
+@GetMapping
+public Page<Product> list(
+    @RequestParam String category,
+    @RequestParam(defaultValue = "0") int page,
+    @RequestParam(defaultValue = "20") int size
+) { … }
+```
+
+`defaultValue` hace el parámetro opcional — si no viene en el request, usa ese valor. Sin `defaultValue`, el parámetro es requerido y Spring devuelve `400` si falta.
+
+### `@RequestBody` — el cuerpo del request
+
+```java
+@PostMapping
+@ResponseStatus(HttpStatus.CREATED)
+public Product create(@RequestBody Product product) {
+    return productService.save(product);
+}
+```
+
+Spring usa <Term definition="Librería de serialización JSON incluida por defecto en spring-boot-starter-web. Convierte automáticamente JSON a objetos Java en el request, y objetos Java a JSON en la respuesta.">Jackson</Term> para deserializar el JSON del body al tipo Java que declaraste. No escribís un solo `objectMapper.readValue(…)` — Spring lo hace por vos.
+
+## Control total con `ResponseEntity`
+
+Cuando necesitás controlar el status HTTP o los headers, usás `ResponseEntity`:
+
+```java
+@GetMapping("/{id}")
+public ResponseEntity<Product> getById(@PathVariable Long id) {
+    return productService.findById(id)
+        .map(ResponseEntity::ok)                 // 200 con el body
+        .orElse(ResponseEntity.notFound().build()); // 404 sin body
+}
+
+@PostMapping
+public ResponseEntity<Product> create(@RequestBody Product product) {
+    Product saved = productService.save(product);
+    URI location = URI.create("/api/products/" + saved.getId());
+    return ResponseEntity
+        .created(location)   // 201 Created con el header Location apuntando al nuevo recurso
+        .body(saved);
+}
+```
+
+Cuando retornás el objeto directamente, Spring asume `200 OK`. `ResponseEntity` lo usás cuando ese default no alcanza: un `POST` que debe retornar `201 Created`, un `GET` que puede retornar `404`, un endpoint que necesita agregar headers de caché.
+
+## Autoevaluación
+
+<Quiz
+  lessonId="controllers"
+  questions={[
+    {
+      id: "q1",
+      question: "¿Cuál es la diferencia entre @Controller y @RestController?",
+      options: [
+        "@RestController solo funciona con JSON; @Controller funciona con cualquier formato",
+        "@RestController combina @Controller y @ResponseBody, serializando el valor de retorno directamente al body de la respuesta",
+        "@Controller es la versión moderna y @RestController es la versión legacy",
+        "No hay diferencia práctica — son intercambiables"
+      ],
+      correctIndex: 1,
+      explanation: "@RestController equivale a @Controller + @ResponseBody aplicado en todos los métodos. @ResponseBody le dice a Spring que el valor de retorno se escribe en el body de la respuesta, no como nombre de una vista. Usás @Controller solo cuando renderizás templates del lado del servidor."
+    },
+    {
+      id: "q2",
+      question: "¿Qué significa que PUT es idempotente y POST no lo es?",
+      options: [
+        "PUT siempre devuelve 200 y POST siempre devuelve 201",
+        "PUT requiere enviar el recurso completo y POST puede enviar datos parciales",
+        "Ejecutar PUT varias veces tiene el mismo efecto que una sola vez; ejecutar POST varias veces puede crear múltiples recursos distintos",
+        "PUT solo funciona si el recurso ya existe; POST solo funciona si no existe"
+      ],
+      correctIndex: 2,
+      explanation: "Idempotente significa que repetir la operación N veces produce el mismo resultado. PUT /products/42 con los mismos datos siempre deja el recurso en el mismo estado, sin importar cuántas veces se llame. POST /products en cambio crea un recurso nuevo en cada llamada — dos POSTs iguales generan dos productos distintos."
+    },
+    {
+      id: "q3",
+      question: "¿Cuándo usás ResponseEntity en lugar de retornar el objeto directamente?",
+      options: [
+        "Siempre — es la forma recomendada en todos los casos",
+        "Cuando necesitás controlar el status HTTP de la respuesta o agregar headers personalizados",
+        "Solo cuando el método puede devolver null",
+        "Solo en endpoints de escritura (POST, PUT, DELETE), nunca en GET"
+      ],
+      correctIndex: 1,
+      explanation: "Retornar el objeto directamente es más conciso — Spring asume 200 OK. ResponseEntity lo usás cuando necesitás precisión: 201 Created con un header Location en un POST, 404 cuando el recurso no existe, o headers de caché personalizados. Para el caso feliz sin lógica de status, el retorno directo está perfecto."
+    }
+  ]}
+/>
+
+<Glossary
+  terms={[
+    {
+      term: "Front Controller",
+      definition: "Patrón de diseño donde un único punto de entrada recibe todos los requests y los delega al handler correcto. En Spring MVC ese punto es el DispatcherServlet, registrado automáticamente por Spring Boot."
+    },
+    {
+      term: "DispatcherServlet",
+      definition: "El servlet central de Spring MVC. Recibe todos los requests HTTP, consulta al HandlerMapping para saber qué método del controller corresponde, y delega la ejecución. Spring Boot lo registra automáticamente."
+    },
+    {
+      term: "@RestController",
+      definition: "Anotación compuesta que equivale a @Controller + @ResponseBody en cada método. Registra la clase como handler de requests HTTP y serializa los valores de retorno directamente al body de la respuesta."
+    },
+    {
+      term: "@RequestMapping",
+      definition: "Anotación que conecta un path HTTP y un verbo con un método Java. A nivel de clase define un prefijo compartido; a nivel de método especifica el sub-path y el verbo. Los shortcuts @GetMapping, @PostMapping, etc. son la forma recomendada."
+    },
+    {
+      term: "@PathVariable",
+      definition: "Extrae un segmento variable del path de la URL y lo inyecta como parámetro del método. Spring convierte el string al tipo declarado automáticamente. Si la conversión falla, retorna 400 Bad Request."
+    },
+    {
+      term: "@RequestParam",
+      definition: "Extrae un query parameter del request y lo inyecta como parámetro del método. Con defaultValue el parámetro es opcional; sin él, es requerido y Spring devuelve 400 si falta."
+    },
+    {
+      term: "@RequestBody",
+      definition: "Le dice a Spring que deserialice el cuerpo del request al tipo Java declarado en el parámetro. Usa Jackson por defecto. Solo aplica a verbos que llevan body: POST, PUT, PATCH."
+    },
+    {
+      term: "ResponseEntity",
+      definition: "Tipo de retorno que envuelve el body de la respuesta junto con el status HTTP y los headers. Lo usás cuando necesitás control explícito sobre el status code o los headers — por ejemplo, 201 Created con un header Location."
+    },
+    {
+      term: "Idempotencia",
+      definition: "Una operación es idempotente si ejecutarla N veces tiene el mismo efecto que ejecutarla una sola vez. GET, PUT y DELETE son idempotentes. POST no lo es: cada llamada puede crear un recurso nuevo."
+    },
+    {
+      term: "Jackson",
+      definition: "Librería de serialización JSON incluida en spring-boot-starter-web. Convierte objetos Java a JSON en la respuesta y JSON a objetos Java en el request, sin configuración extra."
+    }
+  ]}
+/>

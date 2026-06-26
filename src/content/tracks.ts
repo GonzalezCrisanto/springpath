@@ -18,15 +18,16 @@ export interface Track {
 export const tracks: Track[] = [
   {
     id: "fundamentos",
-    title: "Fundamentos de Spring Boot",
+    title: "Fundamentos de Spring",
     order: 1,
     lessons: [
+      { id: "fundamentos-intro", title: "Introducción", level: "dominas", hasQuiz: false, estMinutes: 2 },
       { id: "ioc", title: "Qué es Spring y la inversión de control (IoC)", level: "dominas", hasQuiz: true, estMinutes: 6 },
       { id: "di-beans", title: "Inyección de dependencias y el contenedor de beans", level: "dominas", hasQuiz: false, estMinutes: 8 },
       { id: "autoconfiguration", title: "Autoconfiguration y starters", level: "dominas", hasQuiz: true, estMinutes: 7 },
       { id: "properties", title: "application.properties / yml y perfiles", level: "dominas", hasQuiz: false, estMinutes: 5 },
       { id: "bean-lifecycle", title: "Ciclo de vida de un bean y scopes", level: "nuevo", hasQuiz: true, estMinutes: 8 },
-      { id: "actuator", title: "Spring Boot Actuator (health, metrics, info)", level: "nuevo", hasQuiz: false, estMinutes: 6 },
+      { id: "actuator", title: "Spring Boot Actuator (health, metrics, info)", level: "nuevo", hasQuiz: true, estMinutes: 8 },
     ],
   },
   {
@@ -34,6 +35,7 @@ export const tracks: Track[] = [
     title: "APIs REST con Spring Boot",
     order: 2,
     lessons: [
+      { id: "apis-rest-intro", title: "Introducción", level: "dominas", hasQuiz: false, estMinutes: 2 },
       { id: "controllers", title: "Controllers, @RequestMapping y verbos HTTP", level: "dominas", hasQuiz: true, estMinutes: 7 },
       { id: "dtos-validacion", title: "DTOs y validación con Bean Validation", level: "dominas", hasQuiz: true, estMinutes: 8 },
       { id: "error-handling", title: "Manejo global de errores (@ControllerAdvice)", level: "dominas", hasQuiz: false, estMinutes: 6 },

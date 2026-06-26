@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback } from 'react'
 
 const STORAGE_KEY = 'springpath-progress'
 
@@ -22,11 +22,16 @@ function writeToStorage(ids: Set<string>): void {
   }
 }
 
-export function useProgress(): {
+interface ProgressContextValue {
   completedIds: Set<string>
   markComplete: (lessonId: string) => void
+  markIncomplete: (lessonId: string) => void
   isComplete: (lessonId: string) => boolean
-} {
+}
+
+const ProgressContext = createContext<ProgressContextValue | null>(null)
+
+export function ProgressProvider({ children }: { children: React.ReactNode }) {
   const [completedIds, setCompletedIds] = useState<Set<string>>(() => readFromStorage())
 
   const markComplete = useCallback((lessonId: string) => {
@@ -54,5 +59,15 @@ export function useProgress(): {
     [completedIds],
   )
 
-  return { completedIds, markComplete, markIncomplete, isComplete }
+  return (
+    <ProgressContext.Provider value={{ completedIds, markComplete, markIncomplete, isComplete }}>
+      {children}
+    </ProgressContext.Provider>
+  )
+}
+
+export function useProgress(): ProgressContextValue {
+  const ctx = useContext(ProgressContext)
+  if (!ctx) throw new Error('useProgress must be used inside <ProgressProvider>')
+  return ctx
 }

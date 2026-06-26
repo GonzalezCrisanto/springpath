@@ -1,0 +1,19 @@
+Una API REST es la interfaz pública de tu aplicación. Es lo que consume el frontend, lo que integran otros servicios, lo que documentás para que otros developers puedan trabajar con vos. Hacerla bien no es solo que funcione — es que sea predecible, que respete la semántica HTTP, que maneje los errores de forma consistente, y que sea fácil de entender sin leer el código fuente.
+
+Spring Boot es una de las mejores herramientas para construirlas. No porque tenga la menor cantidad de código, sino porque las decisiones de diseño del framework están alineadas con las buenas prácticas de REST desde el principio.
+
+## Qué vas a aprender
+
+Empezamos por la base: **controllers y el ruteo HTTP**. Cómo `@RestController` y `@RequestMapping` eliminan el ruteo manual, y qué significa la semántica de cada verbo HTTP.
+
+Después viene algo que muchos aprenden tarde: los **DTOs y la validación con Bean Validation**. Exponer tus entidades de JPA directamente en la API es uno de los errores más comunes — y más costosos — de diseño. Los DTOs son la solución, y `@Valid` es la forma de validarlos.
+
+El **manejo global de errores** con `@ControllerAdvice` es lo que separa una API profesional de una que devuelve stacktraces al cliente. Vas a aprender a centralizar el manejo de excepciones en un solo lugar.
+
+La **persistencia con Spring Data JPA** entra en este track porque una API sin base de datos no es una API real. Repositorios, queries, relaciones — lo que necesitás para guardar y recuperar datos.
+
+Cerramos con **OpenAPI/Swagger** para documentar la API automáticamente, y **versionado** para manejar la evolución de los contratos sin romper a los clientes existentes.
+
+## Lo que vas a poder hacer al terminar
+
+Construir una API REST completa con Spring Boot: con validación de entrada, manejo de errores consistente, persistencia real, documentación automática, y capacidad de evolucionar sin romper compatibilidad. Eso es el stack completo de una API en producción.

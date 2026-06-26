@@ -1,0 +1,227 @@
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaInyeccion } from '../../../components/interactive/DiagramaInyeccion'
+
+En la lección anterior vimos que IoC invierte el control: en vez de que la clase haga `new` para conseguir sus dependencias, alguien externo se las provee. Ahora viene la pregunta práctica: ¿cómo funciona eso en Spring? ¿Cómo le decís al contenedor qué objetos tiene que manejar, y cómo le decís de qué manera inyectarlos?
+
+## Qué es un bean
+
+En Spring, un <Term definition="Cualquier objeto que el ApplicationContext crea, configura y gestiona. No es un tipo especial de clase — es un objeto común al que Spring le toma el control del ciclo de vida.">bean</Term> es cualquier objeto que el contenedor crea y gestiona. No hereda de nada especial ni implementa ninguna interfaz rara — es una clase Java normal a la que Spring le toma el control.
+
+Para que Spring sepa que un objeto es suyo, lo marcás con una **anotación de estereotipo**:
+
+```java
+@Component       // caso genérico — cualquier bean
+@Service         // capa de lógica de negocio
+@Repository      // capa de acceso a datos
+@Controller      // capa web — maneja requests HTTP
+```
+
+Las cuatro hacen lo mismo técnicamente: registran la clase como bean en el contenedor. La diferencia es semántica: le comunican a otros desarrolladores (y a herramientas de análisis) cuál es el rol de esa clase en la aplicación.
+
+`@Repository` tiene un comportamiento extra: Spring intercepta las excepciones de JPA/JDBC y las convierte a su propia jerarquía (`DataAccessException`), lo que permite manejarlas de forma uniforme sin importar qué base de datos estés usando.
+
+## Las tres formas de inyectar dependencias
+
+Una vez que Spring sabe qué objetos son beans, necesita conectarlos entre sí. Eso es la **inyección de dependencias**: el proceso por el cual el contenedor le entrega a un bean las dependencias que necesita.
+
+Hay tres estilos. Los tres funcionan — y los tres vas a ver en proyectos reales. Las diferencias están en lo que cada uno garantiza.
+
+### 1. Por constructor
+
+```java
+@Service
+public class OrderService {
+
+    private final IPaymentGateway gateway;
+    private final InventoryRepository inventory;
+
+    public OrderService(IPaymentGateway gateway, InventoryRepository inventory) {
+        this.gateway = gateway;
+        this.inventory = inventory;
+    }
+}
+```
+
+Spring detecta el constructor, ve qué tipos pide, busca beans que los satisfagan y los pasa como argumentos. Los campos son `final`: una vez que el constructor termina, no pueden cambiar. Si Spring no puede resolver alguna dependencia, la app no arranca — el error aparece en <Term definition="El momento en que la aplicación se inicializa y el ApplicationContext construye todos los beans. Si algo falla acá, la app no llega a recibir ningún request.">startup</Term>, no cuando ya está corriendo en producción.
+
+### 2. Por setter
+
+```java
+@Service
+public class OrderService {
+
+    private IPaymentGateway gateway;
+
+    @Autowired
+    public void setGateway(IPaymentGateway gateway) {
+        this.gateway = gateway;
+    }
+}
+```
+
+<Term definition="Anotación que le indica a Spring que tiene que inyectar una dependencia en ese punto — ya sea un constructor, un setter, o un campo.">@Autowired</Term> le dice a Spring "llamá este método e inyectá la dependencia". A diferencia del constructor, la dependencia puede llegar después de que el objeto fue creado, lo que abre la posibilidad de reemplazarla. Ese mismo atributo es útil para dependencias opcionales o para resolver dependencias circulares.
+
+### 3. Por campo
+
+```java
+@Service
+public class OrderService {
+
+    @Autowired
+    private IPaymentGateway gateway;
+}
+```
+
+Spring usa <Term definition="Un mecanismo de Java que permite leer y modificar campos o métodos de una clase en tiempo de ejecución, incluso si son privados. Poderoso pero opaco — el código que lo usa no es visible en la firma de la clase.">reflexión</Term> para escribir directamente en el campo privado, saltándose los modificadores de acceso. Es el estilo más corto de escribir — y el que más vas a encontrar en tutoriales y código legacy.
+
+<DiagramaInyeccion />
+
+## Las diferencias que importan
+
+Ahora que conocés los tres estilos, vale comparar qué garantiza cada uno:
+
+**Inmutabilidad.** Con constructor, los campos son `final` y no pueden cambiar después de la construcción. Con setter o campo, no.
+
+**Cuándo falla.** Si al constructor le falta una dependencia, Spring lo detecta en startup y la app no arranca. Con inyección por campo, el error puede aparecer más tarde — en runtime, cuando el campo todavía es `null` y algo intenta usarlo, lo que genera un <Term definition="Error de Java que ocurre al intentar usar una referencia que apunta a null. Suele ser difícil de diagnosticar en producción porque aparece lejos del punto donde la dependencia debería haberse asignado.">NullPointerException</Term>.
+
+**Testing.** Con inyección por constructor podés crear la clase en un test pasándole lo que necesitás — una implementación falsa, un objeto real, lo que sea — sin levantar el contexto de Spring. Con inyección por campo, el campo es privado y Spring es quien lo escribe vía reflexión, así que necesitás el contenedor para que funcione.
+
+**Visibilidad.** El constructor es la firma pública de la clase: al leerlo sabés exactamente de qué depende. Con inyección por campo, esa información está dispersa en el cuerpo de la clase y no es visible desde afuera.
+
+Cada equipo y cada proyecto elige cómo balancear estos factores. Lo importante es entender qué implica cada decisión.
+
+## Cómo Spring resuelve qué inyectar
+
+Cuando Spring necesita inyectar un `IPaymentGateway`, busca en su contexto un bean que implemente esa interfaz. Si encuentra exactamente uno, lo inyecta sin configuración extra.
+
+En la lección anterior dejamos la semilla de qué pasa cuando hay más de una implementación. Si tenés `StripePaymentGateway` y `PaypalPaymentGateway` ambas marcadas con `@Component`, Spring no sabe cuál usar y lanza una excepción en startup. Hay dos formas de resolverlo:
+
+**`@Primary`** — marcás una implementación como la preferida por defecto:
+
+```java
+@Primary
+@Component
+public class StripePaymentGateway implements IPaymentGateway {
+    // esta se usa si nadie pide una específica
+}
+
+@Component
+public class PaypalPaymentGateway implements IPaymentGateway {
+    // disponible, pero no es el default
+}
+```
+
+**`@Qualifier`** — en el punto de inyección, especificás exactamente cuál querés por nombre:
+
+```java
+@Service
+public class OrderService {
+
+    private final IPaymentGateway gateway;
+
+    public OrderService(@Qualifier("paypalPaymentGateway") IPaymentGateway gateway) {
+        this.gateway = gateway;
+    }
+}
+```
+
+El nombre que le pasás a `@Qualifier` es el nombre del bean, que por defecto es el nombre de la clase con la primera letra en minúscula.
+
+## Un ejemplo completo
+
+Todo junto: una interfaz, su implementación marcada como bean, y un servicio que la recibe por constructor.
+
+```java
+// El contrato — ProductService solo conoce esto
+public interface IProductRepository {
+    Optional<Product> findById(Long id);
+    void save(Product product);
+}
+
+// La implementación concreta — Spring la gestiona
+@Repository
+public class JpaProductRepository implements IProductRepository {
+
+    private final EntityManager em;
+
+    public JpaProductRepository(EntityManager em) {
+        this.em = em;
+    }
+
+    @Override
+    public Optional<Product> findById(Long id) {
+        return Optional.ofNullable(em.find(Product.class, id));
+    }
+
+    @Override
+    public void save(Product product) {
+        em.persist(product);
+    }
+}
+
+// El servicio — depende de la interfaz, no de la implementación
+@Service
+public class ProductService {
+
+    private final IProductRepository repository;
+
+    public ProductService(IProductRepository repository) {
+        this.repository = repository;
+    }
+
+    public Product getProductOrThrow(Long id) {
+        return repository.findById(id)
+            .orElseThrow(() -> new ProductNotFoundException(id));
+    }
+}
+```
+
+Dos cosas para notar:
+
+`Optional<Product>` es un contenedor de Java que representa un valor que puede o no estar presente. `orElseThrow` lanza una excepción si el producto no existe, en vez de retornar `null` — lo que obliga a quien llama a manejar el caso explícitamente.
+
+`EntityManager` es el objeto central de JPA para interactuar con la base de datos. Spring lo provee automáticamente cuando tenés `spring-boot-starter-data-jpa` en el classpath — por eso `JpaProductRepository` puede recibirlo por constructor sin configuración extra.
+
+`ProductService` no sabe si el repositorio usa JPA, JDBC, o un `HashMap` en memoria. Solo sabe que implementa `IProductRepository`. Eso es el desacoplamiento que IoC hace posible.
+
+<Glossary
+  terms={[
+    {
+      term: "Bean",
+      definition: "Cualquier objeto que el ApplicationContext de Spring crea, configura y gestiona. No es un tipo especial — es una clase Java normal cuyo ciclo de vida está bajo control del contenedor."
+    },
+    {
+      term: "Inyección de dependencias (DI)",
+      definition: "El proceso por el cual el contenedor le entrega a un bean las dependencias que necesita. Es la implementación concreta del principio de IoC."
+    },
+    {
+      term: "@Autowired",
+      definition: "Anotación que le indica a Spring dónde inyectar una dependencia. Puede ir sobre un constructor, un setter o un campo. En constructores modernos (Spring 4.3+) es opcional si hay un solo constructor."
+    },
+    {
+      term: "Reflexión (Reflection)",
+      definition: "Mecanismo de Java que permite inspeccionar y modificar clases, métodos y campos en tiempo de ejecución, incluso si son privados. Spring lo usa para inyección por campo."
+    },
+    {
+      term: "Startup",
+      definition: "El momento en que la aplicación arranca y el ApplicationContext construye todos los beans. Los errores de configuración se detectan acá — antes de recibir cualquier request."
+    },
+    {
+      term: "NullPointerException",
+      definition: "Error de Java que ocurre al intentar usar una referencia null. Con inyección por campo, si Spring no inyectó la dependencia, el campo queda null y el error aparece en runtime."
+    },
+    {
+      term: "Optional<T>",
+      definition: "Clase de Java que representa un valor que puede o no estar presente. Alternativa explícita a retornar null — obliga al que llama a manejar el caso 'no encontrado'."
+    },
+    {
+      term: "EntityManager",
+      definition: "El objeto central de JPA para interactuar con la base de datos: buscar, persistir, actualizar y eliminar entidades. Spring lo provee como bean automáticamente cuando JPA está en el classpath."
+    },
+    {
+      term: "DataAccessException",
+      definition: "Jerarquía de excepciones de Spring que envuelve los errores de acceso a datos (JPA, JDBC, etc.). @Repository convierte automáticamente las excepciones nativas en esta jerarquía unificada."
+    }
+  ]}
+/>

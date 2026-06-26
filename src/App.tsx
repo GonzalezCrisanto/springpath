@@ -3,17 +3,20 @@ import { AppLayout } from "./components/layout/AppLayout"
 import { Home } from "./pages/Home"
 import { TrackPage } from "./pages/TrackPage"
 import { LessonPage } from "./pages/LessonPage"
+import { ProgressProvider } from "./contexts/ProgressContext"
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route element={<AppLayout />}>
-          <Route path="/track/:trackId" element={<TrackPage />} />
-          <Route path="/track/:trackId/lesson/:lessonId" element={<LessonPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <ProgressProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route element={<AppLayout />}>
+            <Route path="/track/:trackId" element={<TrackPage />} />
+            <Route path="/track/:trackId/lesson/:lessonId" element={<LessonPage />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </ProgressProvider>
   )
 }

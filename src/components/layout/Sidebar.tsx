@@ -1,19 +1,14 @@
 import { useState } from "react"
 import { Link, useParams } from "react-router"
 import type { Track } from "../../content/tracks"
-import { useProgress } from "../../hooks/useProgress"
+import { useProgress } from "../../contexts/ProgressContext"
 
 interface SidebarProps {
   tracks: Track[]
+  isOpen?: boolean
+  onClose?: () => void
 }
 
-function LevelBadge({ level }: { level: "dominas" | "nuevo" }) {
-  return (
-    <span aria-label={level === "dominas" ? "Dominás" : "Nuevo"}>
-      {level === "dominas" ? "✅" : "🆕"}
-    </span>
-  )
-}
 
 function ChevronIcon({ open }: { open: boolean }) {
   return (
@@ -39,9 +34,10 @@ interface TrackSectionProps {
   track: Track
   activeTrackId: string | undefined
   activeLessonId: string | undefined
+  onLinkClick?: () => void
 }
 
-function TrackSection({ track, activeTrackId, activeLessonId }: TrackSectionProps) {
+function TrackSection({ track, activeTrackId, activeLessonId, onLinkClick }: TrackSectionProps) {
   const isActiveTrack = track.id === activeTrackId
   const [open, setOpen] = useState(isActiveTrack)
   const { isComplete } = useProgress()
@@ -54,7 +50,7 @@ function TrackSection({ track, activeTrackId, activeLessonId }: TrackSectionProp
       >
         <Link
           to={`/track/${track.id}`}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onLinkClick?.() }}
           className="flex-1 truncate hover:text-accent-soft"
         >
           {track.title}
@@ -71,6 +67,7 @@ function TrackSection({ track, activeTrackId, activeLessonId }: TrackSectionProp
               <li key={lesson.id}>
                 <Link
                   to={`/track/${track.id}/lesson/${lesson.id}`}
+                  onClick={onLinkClick}
                   className={`flex items-center gap-2 px-6 py-1.5 text-sm transition-colors ${
                     isActive
                       ? "text-accent-soft bg-accent-bg"
@@ -79,7 +76,6 @@ function TrackSection({ track, activeTrackId, activeLessonId }: TrackSectionProp
                         : "text-text-muted hover:text-text-primary hover:bg-elevated"
                   }`}
                 >
-                  <LevelBadge level={lesson.level} />
                   <span className={`truncate ${!isActive && done ? "opacity-60" : ""}`}>
                     {!isActive && done && (
                       <span className="text-accent-soft mr-1">✓</span>
@@ -96,11 +92,18 @@ function TrackSection({ track, activeTrackId, activeLessonId }: TrackSectionProp
   )
 }
 
-export function Sidebar({ tracks }: SidebarProps) {
+export function Sidebar({ tracks, isOpen = false, onClose }: SidebarProps) {
   const { trackId, lessonId } = useParams()
 
   return (
-    <aside className="w-64 shrink-0 bg-surface border-r border-border overflow-y-auto">
+    <aside
+      className={[
+        "fixed top-14 bottom-0 left-0 z-40 w-72 bg-surface border-r border-border overflow-y-auto",
+        "transform transition-transform duration-200 ease-in-out",
+        "md:static md:top-auto md:bottom-auto md:z-auto md:w-64 md:shrink-0 md:translate-x-0 md:transition-none",
+        isOpen ? "translate-x-0" : "-translate-x-full",
+      ].join(" ")}
+    >
       <nav aria-label="Course navigation">
         {tracks.map((track) => (
           <TrackSection
@@ -108,6 +111,7 @@ export function Sidebar({ tracks }: SidebarProps) {
             track={track}
             activeTrackId={trackId}
             activeLessonId={lessonId}
+            onLinkClick={onClose}
           />
         ))}
       </nav>

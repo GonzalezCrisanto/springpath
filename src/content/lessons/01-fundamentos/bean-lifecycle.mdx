@@ -1,0 +1,236 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaScopes } from '../../../components/interactive/DiagramaScopes'
+
+Spring no solo crea beans — los crea en un orden específico y te permite ejecutar código propio en momentos clave de ese proceso. Entender eso te da control sobre qué pasa cuando la app arranca y cuando se apaga.
+
+## Las fases del ciclo de vida
+
+Todo bean pasa por las mismas etapas:
+
+1. **Instanciación** — Spring llama al constructor
+2. **Inyección de dependencias** — Spring conecta las dependencias declaradas
+3. **Inicialización** — se ejecuta lógica post-construcción, si la hay
+4. **En uso** — el bean está disponible en el contexto y procesa llamadas
+5. **Destrucción** — cuando el contexto se cierra, se ejecuta lógica de limpieza
+
+Las fases 3 y 5 son donde podés enchufar código propio con dos anotaciones: `@PostConstruct` y `@PreDestroy`.
+
+## `@PostConstruct` y `@PreDestroy`
+
+`@PostConstruct` marca un método que Spring invoca después de que el bean fue creado y todas sus dependencias fueron inyectadas. En ese punto, las dependencias ya están disponibles y podés usarlas con seguridad:
+
+```java
+@Service
+public class ReportingService {
+
+    private final ReportConfig config;
+    private final MetricsClient metrics;
+
+    public ReportingService(ReportConfig config, MetricsClient metrics) {
+        this.config = config;
+        this.metrics = metrics;
+    }
+
+    @PostConstruct
+    public void initialize() {
+        // constructor ejecutado + dependencias inyectadas: todo disponible
+        if (config.getOutputDirectory() == null) {
+            throw new IllegalStateException("Falta configurar 'output-directory'");
+        }
+        metrics.registerGauge("reports.pending", this::getPendingCount);
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        // Spring llama esto antes de destruir el bean al cerrar el contexto
+        metrics.flush();
+    }
+}
+```
+
+`@PreDestroy` es el par complementario: se ejecuta justo antes de que Spring destruya el bean. Útil para cerrar conexiones, liberar recursos, o vaciar buffers pendientes.
+
+Ambas anotaciones son parte del estándar Jakarta EE (`jakarta.annotation`) — no son específicas de Spring.
+
+## Scopes: cuántas instancias crea Spring
+
+El <Term definition="Configuración que define cuántas instancias de un bean crea Spring y cuánto tiempo viven. El scope por defecto es Singleton.">scope</Term> de un bean define cuántas instancias de él existen y durante cuánto tiempo.
+
+### Singleton (por defecto)
+
+```java
+@Service  // Singleton implícito — no hace falta declararlo
+public class OrderService {
+    // Spring crea una sola instancia y la reutiliza para todos
+}
+```
+
+Spring crea **una sola instancia** y la comparte entre todos los que la pidan durante toda la vida de la aplicación. Es el comportamiento por defecto — si no declarás nada, tu bean es Singleton.
+
+Como todos los callers acceden al mismo objeto, los beans Singleton se usan con <Term definition="Datos guardados en campos de instancia que pueden cambiar después de la construcción del objeto. En un Singleton compartido, el estado mutable de un caller es visible para todos los demás.">estado mutable</Term> con cuidado: si guardás datos de un request en un campo de instancia, el próximo request los va a ver.
+
+### Prototype
+
+```java
+@Component
+@Scope("prototype")
+public class ReportBuilder {
+    // Spring crea una nueva instancia cada vez que alguien la pide
+    private List<ReportSection> sections = new ArrayList<>();
+}
+```
+
+Spring crea una **instancia nueva** cada vez que alguien pide el bean. Útil cuando el objeto tiene estado propio que no debería compartirse entre callers — como un builder que acumula datos o un procesador con contexto de ejecución.
+
+A diferencia del Singleton, Spring no llama `@PreDestroy` en beans Prototype. La gestión del ciclo de vida final queda fuera del contenedor.
+
+<DiagramaScopes />
+
+### Request y Session (contextos web)
+
+```java
+@Component
+@RequestScope  // una instancia nueva por cada request HTTP
+public class RequestContext {
+    private String correlationId;
+    private User currentUser;
+}
+
+@Component
+@SessionScope  // una instancia por sesión de usuario
+public class ShoppingCart {
+    private List<CartItem> items = new ArrayList<>();
+}
+```
+
+`@RequestScope` crea un bean nuevo por cada request HTTP entrante y lo destruye cuando el request termina. `@SessionScope` lo vincula a la sesión HTTP del usuario — vive mientras dure la sesión.
+
+## El problema del Prototype dentro de un Singleton
+
+Este es uno de los errores más frecuentes al combinar scopes:
+
+```java
+@Service  // Singleton — vive toda la vida de la app
+public class OrderProcessor {
+
+    @Autowired
+    private ReportBuilder builder; // Prototype — se espera uno nuevo por uso
+
+    public void process(Order order) {
+        // builder siempre es LA MISMA instancia —
+        // fue inyectada una sola vez cuando Spring creó el Singleton
+        builder.reset();
+        builder.addSection(order.getItems());
+    }
+}
+```
+
+El problema: Spring inyecta el `ReportBuilder` cuando crea el `OrderProcessor` en startup. Como `OrderProcessor` es Singleton, esa inyección ocurre exactamente una vez. El bean "prototype" que querías que fuera nuevo cada vez actúa como Singleton porque fue inyectado en un Singleton que nunca se recrea.
+
+Una forma de resolverlo es pedirle al contenedor un bean nuevo en cada uso, a través de <Term definition="Componente de Spring que actúa como factory: cada vez que llamás getObject(), retorna una instancia nueva del bean requerido. Útil para obtener Prototypes dentro de Singletons.">ObjectProvider</Term>:
+
+```java
+@Service
+public class OrderProcessor {
+
+    private final ObjectProvider<ReportBuilder> builderProvider;
+
+    public OrderProcessor(ObjectProvider<ReportBuilder> builderProvider) {
+        this.builderProvider = builderProvider;
+    }
+
+    public void process(Order order) {
+        ReportBuilder builder = builderProvider.getObject(); // nueva instancia cada vez
+        builder.addSection(order.getItems());
+    }
+}
+```
+
+`ObjectProvider` es un factory que Spring inyecta como bean. Cada llamada a `getObject()` dispara la creación de una nueva instancia del Prototype.
+
+## Autoevaluación
+
+<Quiz
+  lessonId="bean-lifecycle"
+  questions={[
+    {
+      id: "q1",
+      question: "¿Cuál es el scope por defecto de un bean en Spring?",
+      options: [
+        "Prototype — una instancia nueva cada vez que se pide",
+        "Singleton — una sola instancia compartida por toda la aplicación",
+        "Request — una instancia por cada request HTTP",
+        "Session — una instancia por sesión de usuario"
+      ],
+      correctIndex: 1,
+      explanation: "El scope por defecto es Singleton. Si no declarás @Scope explícitamente, Spring crea una sola instancia del bean y la reutiliza para todos los que la soliciten durante toda la vida de la aplicación."
+    },
+    {
+      id: "q2",
+      question: "¿En qué momento del ciclo de vida se ejecuta el método anotado con @PostConstruct?",
+      options: [
+        "Antes de que Spring inyecte las dependencias",
+        "Al mismo tiempo que el constructor",
+        "Después de que el bean fue creado y todas sus dependencias fueron inyectadas",
+        "Cuando el contexto de Spring se cierra"
+      ],
+      correctIndex: 2,
+      explanation: "@PostConstruct se ejecuta en la fase de inicialización: después del constructor y después de la inyección de dependencias. En ese momento todas las dependencias del bean ya están disponibles."
+    },
+    {
+      id: "q3",
+      question: "¿Qué ocurre cuando inyectás un bean Prototype directamente en un Singleton?",
+      options: [
+        "Spring crea una instancia nueva del Prototype en cada llamada automáticamente",
+        "El Prototype se comporta como Singleton porque se inyectó una sola vez al crear el Singleton",
+        "Spring lanza una excepción en startup por conflicto de scopes",
+        "El Singleton hereda el scope Prototype y crea instancias nuevas por uso"
+      ],
+      correctIndex: 1,
+      explanation: "Spring inyecta el Prototype una sola vez, cuando crea el Singleton en startup. Como el Singleton vive toda la vida de la app, ese Prototype inyectado también — nunca se reemplaza. Para obtener instancias nuevas del Prototype en cada uso, se puede usar ObjectProvider."
+    }
+  ]}
+/>
+
+<Glossary
+  terms={[
+    {
+      term: "Ciclo de vida del bean",
+      definition: "Las fases que atraviesa todo bean: instanciación (constructor), inyección de dependencias, inicialización (@PostConstruct), uso, y destrucción (@PreDestroy). Spring gestiona estas fases automáticamente."
+    },
+    {
+      term: "@PostConstruct",
+      definition: "Anotación sobre un método del bean que Spring invoca después de la instanciación y la inyección de dependencias, antes de que el bean quede disponible. Útil para validar configuración o establecer conexiones."
+    },
+    {
+      term: "@PreDestroy",
+      definition: "Anotación sobre un método del bean que Spring invoca justo antes de destruirlo al cerrar el contexto. Útil para liberar recursos, cerrar conexiones, o hacer flush de datos pendientes."
+    },
+    {
+      term: "Scope",
+      definition: "Configuración que define cuántas instancias de un bean crea Spring y cuánto tiempo viven. El scope por defecto es Singleton."
+    },
+    {
+      term: "Singleton (scope)",
+      definition: "Una sola instancia del bean existe en todo el contexto de Spring. Todos los que pidan ese bean reciben el mismo objeto. Es el scope por defecto."
+    },
+    {
+      term: "Prototype (scope)",
+      definition: "Spring crea una instancia nueva cada vez que alguien pide el bean. Cada caller recibe su propio objeto. Spring no gestiona el @PreDestroy de beans Prototype."
+    },
+    {
+      term: "@RequestScope / @SessionScope",
+      definition: "Scopes disponibles en contextos web. @RequestScope crea un bean por request HTTP. @SessionScope crea un bean por sesión de usuario. Ambos destruyen el bean cuando el request o la sesión terminan."
+    },
+    {
+      term: "ObjectProvider",
+      definition: "Componente de Spring que actúa como factory de beans. Cada llamada a getObject() retorna una instancia del bean requerido — lo que permite obtener Prototypes nuevos dentro de un Singleton."
+    },
+    {
+      term: "Estado mutable",
+      definition: "Datos almacenados en campos de instancia que pueden cambiar después de la construcción. En un bean Singleton, el estado mutable es compartido entre todos los callers — lo que puede generar bugs difíciles de reproducir."
+    }
+  ]}
+/>

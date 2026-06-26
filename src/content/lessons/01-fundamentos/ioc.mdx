@@ -1,0 +1,240 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaIoC } from '../../../components/interactive/DiagramaIoC'
+
+Spring es el framework más usado en el ecosistema Java enterprise. Su función central es simple: administrar los objetos de tu aplicación y las conexiones entre ellos, para que vos te concentrés en la lógica de negocio. Pero para entender por qué existe, primero hay que ver el problema que vino a resolver.
+
+## El problema: una clase que sabe demasiado
+
+Imaginá que estás construyendo una app de e-commerce. Tenés un `OrderService` que necesita un `IPaymentGateway` — una <Term definition="Un contrato en Java que define qué métodos debe tener una clase, sin implementarlos. Varias clases pueden implementar la misma interfaz, lo que permite intercambiarlas sin cambiar el código que las usa.">interfaz</Term> que define cómo cobrar un pago — para hacer su trabajo.
+
+`IPaymentGateway` es una **dependencia** de `OrderService`: un objeto externo que `OrderService` necesita para funcionar. La pregunta es cómo conseguirla.
+
+La forma más directa es crearla adentro de la propia clase:
+
+```java
+// Paso 1: acoplado
+public class OrderService {
+
+    private IPaymentGateway gateway;
+
+    public OrderService() {
+        this.gateway = new StripePaymentGateway(); // OrderService elige quién cobra
+    }
+
+    public void processOrder(Order order) {
+        gateway.charge(order.getTotal());
+    }
+}
+```
+
+Funciona. Pero tiene un problema serio: `OrderService` está atado a `StripePaymentGateway`. Si mañana querés cambiar a PayPal, tenés que abrir `OrderService` y modificarlo. Si querés probarlo sin cobrar tarjetas reales, no podés — `new StripePaymentGateway()` se ejecuta siempre.
+
+Esto se llama <Term definition="El grado de dependencia entre dos partes del código. Acoplamiento fuerte significa que un cambio en una clase obliga a cambiar la otra. El objetivo del buen diseño es minimizarlo.">acoplamiento fuerte</Term>: dos clases pegadas entre sí de forma que cambiar una obliga a cambiar la otra.
+
+## La solución: invertir el control
+
+La idea central de IoC es que el objeto no debería crear sus dependencias — alguien de afuera se las entrega. Ese cambio es pequeño en código pero enorme en consecuencias:
+
+```java
+// Paso 2: desacoplado a mano
+public class OrderService {
+
+    // final: una vez recibido en el constructor, este campo no puede reemplazarse
+    private final IPaymentGateway gateway;
+
+    // Ya no creamos la dependencia — la recibimos
+    public OrderService(IPaymentGateway gateway) {
+        this.gateway = gateway;
+    }
+
+    public void processOrder(Order order) {
+        gateway.charge(order.getTotal());
+    }
+}
+```
+
+Ahora `OrderService` no sabe ni le importa si el que cobra es Stripe, PayPal, o cualquier otra cosa. Solo sabe que recibe algo que cumple el contrato de `IPaymentGateway`. Quien crea el `OrderService` decide qué implementación usar.
+
+El "control" que se invirtió es exactamente ese: antes, el objeto controlaba la creación de sus dependencias. Ahora ese control lo tiene alguien externo.
+
+<DiagramaIoC />
+
+## El contenedor de Spring: ApplicationContext
+
+En una app real ese "alguien externo" no podés ser vos creando todo a mano. Para eso existe el <Term definition="El contenedor central de Spring. Es el responsable de crear, conectar y gestionar todos los beans de la aplicación. Arranca al iniciar la app y se cierra al apagarla.">ApplicationContext</Term>: el componente central de Spring que:
+
+- Crea todos los objetos que le indicaste
+- Resuelve sus dependencias
+- Los conecta entre sí
+- Gestiona su ciclo de vida
+
+Cuando arranca una app Spring Boot, el `ApplicationContext` lee las <Term definition="Una etiqueta que empieza con @ y se coloca sobre una clase, método o campo. Le da instrucciones al framework sin cambiar la lógica del código. Ejemplos: @Service, @Component, @Test.">anotaciones</Term> sobre tus clases, instancia todos los objetos necesarios y los deja listos para usar. Vos nunca escribís `new` para tus servicios; el contenedor se encarga.
+
+## Cómo se ve esto en Spring
+
+Con Spring, el ejemplo anterior queda así:
+
+```java
+// Paso 3: con Spring
+@Service
+public class OrderService {
+
+    private final IPaymentGateway gateway;
+
+    public OrderService(IPaymentGateway gateway) {
+        this.gateway = gateway;
+    }
+
+    public void processOrder(Order order) {
+        gateway.charge(order.getTotal());
+    }
+}
+
+@Component
+public class StripePaymentGateway implements IPaymentGateway {
+
+    @Override
+    public void charge(BigDecimal amount) {
+        // lógica real de Stripe
+    }
+}
+```
+
+`@Service` y `@Component` son etiquetas que le dicen a Spring "registrá esta clase como un objeto tuyo". No cambian el comportamiento de la clase — solo la hacen visible para el contenedor. La diferencia entre ambas y el resto de las anotaciones de este tipo las vemos en la siguiente lección.
+
+### ¿Cómo encuentra Spring la implementación correcta?
+
+Spring mira el constructor de `OrderService`, ve que necesita un `IPaymentGateway`, y busca en su contexto: ¿tengo algún bean que implemente esa interfaz? Encuentra `StripePaymentGateway` y lo inyecta.
+
+Esto funciona porque en este ejemplo hay **una sola** implementación de `IPaymentGateway`. Si hubiera dos — por ejemplo, también existiera `PaypalPaymentGateway` — Spring no sabría cuál elegir y lanzaría un error. Para ese caso existen `@Primary` y `@Qualifier`, que vemos más adelante cuando lleguemos a la configuración avanzada de beans.
+
+### ¿Puede el constructor recibir una interfaz?
+
+Puede que te preguntes cómo el constructor puede recibir `IPaymentGateway` si es una interfaz — es decir, no tiene implementación propia. En Java, una variable puede ser del tipo de la interfaz y contener una instancia concreta:
+
+```java
+IPaymentGateway gateway = new StripePaymentGateway(); // perfectamente válido
+```
+
+Spring hace exactamente eso, pero sin que vos escribas el `new`. El constructor recibe el tipo de la interfaz; en runtime, lo que llega es siempre un objeto real.
+
+## Por qué esto importa para testing
+
+Este es uno de los beneficios más concretos de IoC. Si `OrderService` construye su propio `StripePaymentGateway`, en un test no tenés forma de evitar que intente conectarse a Stripe. Pero si la dependencia llega desde afuera, podés pasarle cualquier cosa que implemente la interfaz — incluyendo una versión de mentira:
+
+```java
+// Una implementación falsa, sin red, sin Stripe, sin nada real
+class FakePaymentGateway implements IPaymentGateway {
+    boolean fueLlamado = false;
+    BigDecimal montoRecibido;
+
+    @Override
+    public void charge(BigDecimal amount) {
+        this.fueLlamado = true;
+        this.montoRecibido = amount;
+    }
+}
+```
+
+```java
+// El test es explícito y no necesita infraestructura
+void processOrder_deberiaCargarElMontoExacto() {
+    FakePaymentGateway fake = new FakePaymentGateway();
+    OrderService service = new OrderService(fake); // le pasamos el fake
+
+    service.processOrder(new Order(BigDecimal.valueOf(100)));
+
+    assert fake.fueLlamado == true;
+    assert fake.montoRecibido.equals(BigDecimal.valueOf(100));
+}
+```
+
+Cero red, cero tarjetas, cero infraestructura. El test corre en milisegundos y verifica exactamente lo que querés. Esto es posible solo porque `OrderService` recibe su dependencia desde afuera.
+
+## IoC como concepto vs Spring como implementación
+
+Antes de cerrar, vale separar las dos cosas:
+
+- **IoC** es un principio de diseño: las dependencias se inyectan desde afuera, no se crean internamente
+- **Spring** es una implementación concreta de ese principio, con herramientas como el `ApplicationContext` y el escaneo de componentes
+
+Otros frameworks también implementan IoC — CDI en Jakarta EE, Guice de Google — pero Spring es el más difundido en el ecosistema Java enterprise.
+
+## Autoevaluación
+
+<Quiz
+  lessonId="ioc"
+  questions={[
+    {
+      id: "q1",
+      question: "¿Cuál es el problema principal que resuelve IoC?",
+      options: [
+        "El acoplamiento fuerte entre clases",
+        "La velocidad de compilación en proyectos grandes",
+        "El manejo de memoria en la JVM",
+        "La sintaxis verbosa de Java"
+      ],
+      correctIndex: 0,
+      explanation: "IoC resuelve el acoplamiento fuerte: cuando una clase crea sus propias dependencias con 'new', queda atada a una implementación concreta. IoC invierte ese control para que las dependencias lleguen desde afuera."
+    },
+    {
+      id: "q2",
+      question: "En Spring, ¿quién es responsable de crear y conectar los objetos de la aplicación?",
+      options: [
+        "El programador, usando 'new' en cada clase",
+        "El ApplicationContext (el contenedor de Spring)",
+        "El compilador de Java",
+        "El servidor web (Tomcat)"
+      ],
+      correctIndex: 1,
+      explanation: "El ApplicationContext es el contenedor de IoC de Spring. Es el que instancia los objetos, resuelve sus dependencias y los conecta. El programador declara qué objetos existen; el contenedor se encarga del resto."
+    },
+    {
+      id: "q3",
+      question: "¿Por qué IoC facilita el testing?",
+      options: [
+        "Porque Spring genera los tests automáticamente",
+        "Porque los tests corren más rápido al usar el contenedor",
+        "Porque podés pasar una implementación falsa sin cambiar la clase bajo test",
+        "Porque elimina la necesidad de usar JUnit"
+      ],
+      correctIndex: 2,
+      explanation: "Cuando la dependencia llega desde afuera por constructor, en el test podés pasarle cualquier implementación — incluyendo una clase falsa que no toca infraestructura real. La clase bajo test no cambia en absoluto."
+    }
+  ]}
+/>
+
+<Glossary
+  terms={[
+    {
+      term: "Dependencia",
+      definition: "Cualquier objeto externo que una clase necesita para funcionar. Si OrderService no puede hacer su trabajo sin IPaymentGateway, entonces IPaymentGateway es una dependencia de OrderService."
+    },
+    {
+      term: "Interfaz (interface)",
+      definition: "Un contrato en Java que define qué métodos debe tener una clase, sin implementarlos. Varias clases pueden implementar la misma interfaz, lo que permite intercambiarlas sin cambiar el código que las usa."
+    },
+    {
+      term: "Acoplamiento",
+      definition: "El grado de dependencia entre dos partes del código. Acoplamiento fuerte significa que un cambio en una clase obliga a cambiar la otra. El objetivo del buen diseño es reducirlo."
+    },
+    {
+      term: "Anotación (@)",
+      definition: "Una etiqueta que empieza con @ y se coloca sobre una clase, método o campo. Le da instrucciones al framework sin cambiar la lógica del código. Ejemplos: @Service, @Component, @Test."
+    },
+    {
+      term: "ApplicationContext",
+      definition: "El contenedor central de Spring. Es el responsable de crear, conectar y gestionar todos los beans de la aplicación. Arranca al iniciar la app y se cierra al apagarla."
+    },
+    {
+      term: "Classpath",
+      definition: "La lista de clases y librerías (JARs) disponibles para la JVM en tiempo de ejecución. Spring Boot lo inspecciona para decidir qué configurar automáticamente."
+    },
+    {
+      term: "@Primary / @Qualifier",
+      definition: "Anotaciones que resuelven el conflicto cuando hay más de una implementación de una interfaz. @Primary marca la implementación por defecto; @Qualifier permite elegir una específica por nombre."
+    }
+  ]}
+/>

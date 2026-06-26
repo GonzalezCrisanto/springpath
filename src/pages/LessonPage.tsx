@@ -26,27 +26,12 @@ export function LessonPage() {
   const MDXContent = loadLesson(trackId!, lessonId!)
 
   return (
-    <div className="max-w-prose">
-      {/* Breadcrumb */}
-      <p className="text-text-muted text-sm mb-4">
-        <Link to={`/track/${track.id}`} className="hover:text-text-primary transition-colors">
-          {track.title}
-        </Link>
-        {' → '}
-        <span>{lesson.title}</span>
-      </p>
-
+    <div className="w-full">
       {/* Title */}
       <h1 className="text-2xl font-medium text-text-primary mb-2">{lesson.title}</h1>
 
-      {/* Level badge + estimated time + completion */}
+      {/* Estimated time + completion */}
       <p className="text-sm text-text-muted mb-6">
-        <span
-          className="inline-block px-2 py-0.5 rounded bg-accent-bg text-accent-soft mr-3"
-          aria-label={lesson.level === 'dominas' ? 'Dominás' : 'Nuevo'}
-        >
-          {lesson.level === 'dominas' ? '✅ dominás' : '🆕 nuevo'}
-        </span>
         {lesson.estMinutes && <span className="mr-3">{lesson.estMinutes} min de lectura</span>}
         {isComplete(lessonId!) && (
           <span className="inline-block px-2 py-0.5 rounded bg-accent-bg text-accent-soft">

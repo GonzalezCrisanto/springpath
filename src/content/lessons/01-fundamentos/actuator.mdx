@@ -1,0 +1,260 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaActuator } from '../../../components/interactive/DiagramaActuator'
+
+Tu app arranca, los tests pasan, el deploy salió bien. Y entonces — inevitablemente — algo falla en producción. La pregunta es: ¿tenés forma de entender qué pasó?
+
+¿Está respondiendo la app? ¿Conecta a la base de datos? ¿Cuánta memoria JVM está usando? ¿El pool de conexiones se está llenando? Sin respuestas a esas preguntas, operar una aplicación es volar a ciegas — y cuando algo falla, lo único que podés hacer es adivinar.
+
+**Spring Boot Actuator** resuelve eso de raíz. Con agregar una dependencia, tu app expone un conjunto de endpoints HTTP que muestran su estado interno: salud, métricas, configuración activa, loggers. No instrumentás nada vos mismo — está todo ahí.
+
+## Por qué esto importa más allá de la curiosidad
+
+El problema no es solo que vos quieras saber qué pasa. Los sistemas que corren tu app en producción también necesitan saberlo:
+
+- **Kubernetes** hace chequeos periódicos a un endpoint de salud para decidir si reinicia un pod o lo saca de rotación. Si tu app no responde nada útil, el orquestador reinicia el pod — aunque la app esté técnicamente viva.
+- **Prometheus** necesita un endpoint para scrapear métricas cada N segundos y alimentar los dashboards de Grafana.
+- **Tu equipo** necesita saber si la DB conecta, si el disco se está llenando, o si el pool de conexiones HikariCP está saturado — antes de que lo reporten los usuarios.
+
+Sin Actuator, tu app es una caja negra para todos ellos.
+
+<DiagramaActuator />
+
+## Habilitarlo
+
+Agregás el starter:
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+```
+
+Por defecto, Actuator expone solo `/actuator/health` e `/actuator/info` por HTTP. El resto existe internamente pero no es accesible desde la web — ya vas a ver por qué eso es intencional.
+
+Para habilitar más:
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,env,loggers
+  endpoint:
+    health:
+      show-details: always  # muestra el estado de cada componente, no solo UP/DOWN global
+```
+
+## Los endpoints que vas a usar siempre
+
+### `/actuator/health`
+
+El más importante. Devuelve el estado de la app y de cada componente integrado. Con `show-details: always`:
+
+```json
+{
+  "status": "UP",
+  "components": {
+    "db": {
+      "status": "UP",
+      "details": {
+        "database": "PostgreSQL",
+        "validationQuery": "isValid()"
+      }
+    },
+    "diskSpace": {
+      "status": "UP",
+      "details": {
+        "total": 250685575168,
+        "free": 89432014848,
+        "threshold": 10485760
+      }
+    }
+  }
+}
+```
+
+El `status` en la raíz agrega todos los componentes: si cualquiera devuelve `DOWN`, el estado global también es `DOWN`. Kubernetes basa sus decisiones de reinicio en ese valor.
+
+### `/actuator/metrics`
+
+<Term definition="Valores numéricos que describen el comportamiento de la app en el tiempo: requests por segundo, latencia, uso de memoria JVM, conexiones activas al pool de DB, etc.">Métricas</Term> numéricas recolectadas sin configuración extra. Primero pedís el listado:
+
+```
+GET /actuator/metrics
+```
+
+Y después el detalle de cada una por nombre:
+
+```
+GET /actuator/metrics/http.server.requests
+GET /actuator/metrics/jvm.memory.used
+GET /actuator/metrics/hikaricp.connections.active
+```
+
+Tenés métricas de JVM, Tomcat, HikariCP y de tus endpoints HTTP — todo gratis por el simple hecho de tener el starter.
+
+### `/actuator/info` y `/actuator/env`
+
+`/info` muestra metadata estática que configurás vos en `application.yml`:
+
+```yaml
+info:
+  app:
+    name: Springpath
+    version: 1.0.0
+```
+
+`/env` muestra todas las propiedades activas — útil para diagnosticar por qué una configuración no tiene el valor que esperás. Fijate que también muestra variables de entorno y propiedades del sistema.
+
+## Agregar tu propio indicador de salud
+
+¿Tu app depende de un servicio externo — una API de pagos, un sistema legado? Podés agregar ese chequeo implementando <Term definition="Interfaz de Spring que permite registrar un componente de salud personalizado. Spring lo detecta automáticamente y lo incluye en /actuator/health.">HealthIndicator</Term>:
+
+```java
+@Component
+public class ExternalApiHealthIndicator implements HealthIndicator {
+
+    private final PaymentGatewayClient client;
+
+    public ExternalApiHealthIndicator(PaymentGatewayClient client) {
+        this.client = client;
+    }
+
+    @Override
+    public Health health() {
+        try {
+            client.ping();
+            return Health.up()
+                .withDetail("gateway", "Stripe")
+                .withDetail("status", "reachable")
+                .build();
+        } catch (Exception e) {
+            return Health.down()
+                .withDetail("gateway", "Stripe")
+                .withDetail("error", e.getMessage())
+                .build();
+        }
+    }
+}
+```
+
+Spring detecta automáticamente cualquier bean que implemente `HealthIndicator` y lo suma a la respuesta de `/actuator/health`. No registrás nada en ningún lado — es el mismo mecanismo de autodescubrimiento de siempre.
+
+## Por qué no exponés todo en producción
+
+Acá viene algo importante que mucha gente ignora: algunos endpoints de Actuator son peligrosos si quedan expuestos sin protección.
+
+`/actuator/env` muestra todas tus propiedades — incluidas contraseñas y claves de API si no están enmascaradas. `/actuator/shutdown` puede apagar la app remotamente. `/actuator/loggers` permite cambiar el nivel de log en runtime.
+
+La práctica estándar tiene dos partes:
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics  # solo lo que el sistema de monitoreo necesita
+  server:
+    port: 8081  # Actuator en un puerto separado, inaccesible desde internet
+```
+
+Con el puerto separado, configurás el firewall para que solo los sistemas internos de monitoreo accedan al `8081`. Los usuarios de la app solo ven el `8080`. Un endpoint de diagnóstico nunca debería estar en la misma superficie que la API pública.
+
+## El siguiente paso: Prometheus y Grafana
+
+Actuator es el primer eslabón. El stack completo es:
+
+**Actuator** → recolecta métricas internamente  
+**Micrometer** → las normaliza en un formato común  
+**Prometheus** → las scrapeá y las almacena  
+**Grafana** → las muestra en dashboards
+
+Con solo agregar `micrometer-registry-prometheus`, Actuator empieza a exportar todo en el formato que Prometheus espera en `/actuator/prometheus`. Ese flujo completo lo vas a ver en el Track 6.
+
+## Autoevaluación
+
+<Quiz
+  lessonId="actuator"
+  questions={[
+    {
+      id: "q1",
+      question: "¿Qué endpoints expone Spring Boot Actuator por HTTP de forma predeterminada?",
+      options: [
+        "Todos los disponibles: health, info, metrics, env, loggers y más",
+        "Solo /actuator/health y /actuator/info",
+        "Solo /actuator/metrics y /actuator/env",
+        "Ninguno — todos están deshabilitados hasta que los configurés explícitamente"
+      ],
+      correctIndex: 1,
+      explanation: "Por defecto Actuator expone únicamente /actuator/health y /actuator/info por HTTP. El resto existe pero no es accesible desde la web. Es una decisión de seguridad deliberada: evitar que datos internos sensibles queden expuestos sin configuración explícita."
+    },
+    {
+      id: "q2",
+      question: "¿Para qué usa Kubernetes el endpoint /actuator/health?",
+      options: [
+        "Para obtener métricas de CPU y memoria de la app",
+        "Para ver los logs en tiempo real",
+        "Como liveness y readiness probe: decide si reinicia el pod o lo saca de rotación de tráfico",
+        "Para desplegar nuevas versiones automáticamente"
+      ],
+      correctIndex: 2,
+      explanation: "Kubernetes consulta /actuator/health periódicamente como liveness probe (¿el pod sigue vivo?) y readiness probe (¿está listo para recibir tráfico?). Si el liveness probe falla repetidamente, Kubernetes reinicia el pod. Si el readiness probe falla, lo saca de la rotación hasta que vuelva a responder UP."
+    },
+    {
+      id: "q3",
+      question: "¿Cómo registrás un health indicator personalizado en Spring?",
+      options: [
+        "Implementando la interfaz HealthIndicator y anotando la clase con @Component",
+        "Agregando una entrada en application.yml bajo management.health.custom",
+        "Llamando a ActuatorRegistry.register() en el método main",
+        "Extendiendo AbstractHealthEndpoint y sobreescribiendo el método check()"
+      ],
+      correctIndex: 0,
+      explanation: "Implementás HealthIndicator en un @Component y Spring lo detecta automáticamente. No necesitás registrarlo en ningún lado — es el mismo mecanismo de autodescubrimiento que usás para cualquier bean."
+    }
+  ]}
+/>
+
+<Glossary
+  terms={[
+    {
+      term: "Spring Boot Actuator",
+      definition: "Módulo que agrega endpoints HTTP para observar el estado interno de la app: salud, métricas, configuración activa, loggers. Se habilita agregando spring-boot-starter-actuator."
+    },
+    {
+      term: "Observabilidad",
+      definition: "Capacidad de entender el estado interno de un sistema observando sus salidas externas — logs, métricas, trazas, y health checks — sin necesidad de tocarlo directamente. Actuator es la capa de observabilidad de Spring."
+    },
+    {
+      term: "/actuator/health",
+      definition: "Endpoint que devuelve el estado agregado de la app y de cada componente integrado (DB, disco, servicios externos). Kubernetes lo usa como liveness y readiness probe."
+    },
+    {
+      term: "Liveness probe",
+      definition: "Chequeo periódico de Kubernetes a un endpoint para saber si un pod sigue vivo. Si falla repetidamente, el orquestador reinicia el pod."
+    },
+    {
+      term: "Readiness probe",
+      definition: "Chequeo de Kubernetes para saber si un pod está listo para recibir tráfico. Hasta que responda UP, el pod queda fuera de la rotación del load balancer."
+    },
+    {
+      term: "/actuator/metrics",
+      definition: "Endpoint que expone métricas numéricas de la app: requests HTTP, uso de memoria JVM, conexiones al pool de DB (HikariCP), métricas de Tomcat. Se consultan por nombre."
+    },
+    {
+      term: "HealthIndicator",
+      definition: "Interfaz de Spring para agregar indicadores de salud personalizados. Implementarla en un @Component es suficiente — Spring la detecta e incluye en /actuator/health automáticamente."
+    },
+    {
+      term: "Micrometer",
+      definition: "Capa de abstracción de métricas que se integra con Actuator. Normaliza las métricas en un formato común exportable a Prometheus, Datadog, InfluxDB, y otros backends."
+    },
+    {
+      term: "management.server.port",
+      definition: "Propiedad que mueve los endpoints de Actuator a un puerto HTTP separado. La práctica estándar en producción es aislar Actuator en un puerto interno (ej. 8081) inaccesible desde internet."
+    }
+  ]}
+/>

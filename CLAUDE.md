@@ -118,13 +118,43 @@ Predictability is key in educational UX — the user learns the pattern once and
 
 1. **Header** — title, level badge (✅ dominás / 🆕 nuevo), estimated reading time
 2. **Concept** — prose explanation, with diagrams where they add value
-3. **Interactive visual** — when applicable (animation, map, schema)
+3. **Interactive visual** — an animated conceptual diagram when the concept warrants one (see §9); omit when it wouldn't add real value
 4. **Code** — commented snippet with syntax highlighting
 5. **Playground** — when applicable (simulated, see §2)
 6. **Quiz** — 2–3 short self-assessment questions
 7. **Navigation** — previous / next + "mark as completed"
 
 ---
+## 5b. Voice & writing style (applies to ALL lesson content)
+
+The teaching voice is the project's signature. Technical terms stay precise; the *delivery* is warm and conversational — "a slightly older colleague who already went through this and explains it to you over a coffee," not a lecturer.
+
+### Core principles
+- Always open a concept with the **problem/pain** before the solution. Nobody understands a tool without understanding the pain it solves.
+- Explain in plain language, then anchor with the precise technical term. Never drop the technical terms (class names, annotations, concepts) — those are sacred.
+- Address the reader directly ("¿ves el problema?", "fijate que…").
+- Use everyday metaphors that *are* the explanation (see below).
+- Celebrate the "ajá" moments ("y acá viene lo lindo…").
+
+### Argentine register — with a hard rule
+Spanish is **Argentine, used with measure**. The register is rioplatense (vos, not tú) in rhythm and warmth — NOT in heavy slang.
+
+**The rule: an Argentinism must earn its place by explaining something. If you can delete it and the sentence teaches exactly the same, it's filler — remove it.**
+
+Two categories:
+1. **Explanatory argentinisms (unlimited)** — colloquial metaphors that ARE the concept. Example: calling a tightly-coupled `OrderService` "un metiche que se mete donde no la llaman" — "metiche" literally conveys coupling. These are the heart of the approach.
+2. **Color argentinisms (max 1–2 per lesson)** — flavor words (che, quilombo, bárbaro, una masa) used only in transitions or closings, never stacked, never in every paragraph. Overuse turns "expert you enjoy reading" into "comedian," which kills technical authority.
+
+**Comprehensibility filter:** the expression must be graspable by ANY Spanish speaker even if it reads as Argentine. "Quilombo" is fine (clear from context). Avoid impenetrable lunfardo or very closed phrases ("de una", "ni en pedo") that exclude non-Argentine readers. Argentine in rhythm and warmth, not in impenetrable jargon.
+
+### Quick examples
+- ✅ Good (explanatory): "OrderService es un metiche: además de procesar la orden, quiere decidir él que los pagos van por Stripe."
+- ✅ Good (color, used once): "Si mañana querés cambiar a PayPal, tenés que entrar a tocarlo. Un quilombo."
+- ❌ Bad (filler slang): "Che, boludo, este método está re zarpado, mirá qué groso el constructor." → no technical value, excludes readers, kills authority.
+- ❌ Bad (lost precision): replacing "inyección de dependencias" with a vague colloquial phrase. Never sacrifice the term.
+
+### Testing in the first lesson
+In the IoC lesson specifically: do NOT introduce Mockito (`mock()`, `verify()`) — too heavy for lesson #1. Use a simple explicit fake implementation (`FakePaymentGateway` with a boolean flag) to show the testability benefit. Mockito has its dedicated lesson in Track 7; respect the progression.
 
 ## 6. Design system — palette "D" (neutral base + teal/emerald accent)
 
@@ -176,6 +206,9 @@ Dark mode is the **default**. Both modes must work. Accent (teal) is reserved fo
 - 🆕 nuevo → neutral/amber background, used to signal "learning / breadth"
 
 ### Typography & spacing
+- **Body font:** Inter (Google Fonts) — for all prose and UI.
+- **Monospace font:** JetBrains Mono (Google Fonts) — for all code, snippets, inline `code`. Chosen deliberately: it's made by the company behind IntelliJ, the standard Java IDE. Enable ligatures.
+- Load both via Google Fonts; expose as `--font-sans` and `--font-mono`.
 - Limited text column width for comfortable reading (~65–75ch)
 - Clear type hierarchy, generous whitespace
 - Two font weights only: 400 regular, 500 medium. Avoid 600/700.
@@ -205,14 +238,42 @@ Plus: dark/light toggle, always-visible track progress.
 
 ---
 
-## 9. Legal note (footer)
+## 8b. Conceptual diagrams (one per lesson, part of the mold)
 
-This is an independent educational site. Include a small footer disclaimer:
-> "Sitio educativo independiente. No está afiliado ni avalado por Broadcom/VMware ni por el proyecto Spring."
+Every lesson includes an **animated conceptual diagram** that shows the idea in motion — not a static decorative image. This is the project's biggest differentiator; almost no Spring resource does this well. Built with **Framer Motion** (already in stack).
 
-Do **not** use the official Spring logo or any look-alike isotype. Mentioning the names "Spring", "Spring Boot", etc. for educational purposes is fine (nominative use). The teal/emerald accent is intentionally distinct from Spring's corporate green to avoid implying official affiliation.
+### Shared visual language (consistency across all 46 lessons)
+The same vocabulary repeats everywhere so the site feels coherent and "designed":
+- An object/component = a **box**
+- A delivery/injection = an **arrow with motion** (something travels along it)
+- Problem / coupling / blocking state = **red** (c-red / c-coral ramp)
+- Solution / healthy / accepted state = **teal/green** (c-teal ramp, matches accent)
+- Neutral/structural = **gray**
+- Keep ≤2 color ramps per diagram; colors encode meaning, not decoration.
 
----
+### Each concept has a natural visual metaphor — reuse them
+- **IoC / Dependency Injection** → delivery from outside (container hands the dependency to the object; box travels along an arrow into a dashed slot).
+- **Security filter chain** → a row of checkpoints the request passes one by one (like control posts).
+- **JWT** → a stamp/credential that travels with each request.
+- **API Gateway** → a reception desk routing to the right offices.
+- **Circuit Breaker** → a light switch that cuts the flow (open/closed).
+- **Load Balancer** → a distributor splitting traffic across identical workers.
+- (Define a fitting metaphor for each remaining lesson, reusing the shared vocabulary above.)
+
+### Pattern (reference: IoC lesson)
+Two toggle-able scenarios side by side — "without IoC" (object builds its own dependency, shown coupled/red) vs "with IoC" (container delivers the dependency from outside, arrow + traveling box, teal). A one-line caption under the diagram changes with the toggle. The reader learns the visual grammar once and applies it across every lesson.
+
+## 9. Conceptual diagrams (only when they genuinely add value)
+
+A conceptual diagram is part of the lesson mold, but it is NOT mandatory in every lesson. Generate one **only when it genuinely aids understanding** — when there's something spatial, sequential, or structural to show. A diagram that doesn't add real explanatory value is noise: it distracts instead of helping. When in doubt, leave it out.
+
+**When a diagram IS warranted** (the concept has motion/structure): build it **animated** with Framer Motion. This is the project's biggest differentiator; almost no Spring resource does this well. Examples that warrant one: IoC/dependency injection, the Security filter chain, JWT flow, API Gateway routing, Circuit Breaker, Load Balancer.
+
+**When a diagram is NOT warranted** (the concept is syntax, naming, or convention with nothing spatial to show): skip it. Forcing a diagram here is artificial. A clear code snippet is enough.
+
+**Static vs animated:** prefer animated when there's a flow or state change to convey (something moves, a request travels, a state flips). Use a static diagram only when the structure is worth showing but nothing actually moves. If neither applies, no diagram.
+
+When a diagram IS included, it must follow the shared visual language below so the site stays coherent.
 
 ## 10. First milestone — vertical slice
 

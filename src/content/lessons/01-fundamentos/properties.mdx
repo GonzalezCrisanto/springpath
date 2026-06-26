@@ -1,0 +1,215 @@
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+
+Toda app tiene valores que cambian según el entorno: la URL de la base de datos en tu máquina apunta a `localhost`; en producción apunta a una instancia remota en AWS. La clave de API de Stripe en desarrollo es de prueba; en producción es la real, con plata real.
+
+Si esos valores estuvieran hardcodeados en el código, cambiarlos implicaría modificar el fuente, recompilar y volver a deployar. Para cada entorno. Spring Boot los externaliza a archivos de configuración para que el código no cambie — solo la config.
+
+## Dónde vive la configuración
+
+Spring Boot busca la configuración en `src/main/resources/`. Dos formatos:
+
+- `application.properties` — clave=valor, plano y directo
+- `application.yml` — <Term definition="YAML Ain't Markup Language: formato de serialización de datos basado en indentación. Permite representar estructuras anidadas de forma legible. Sensible a la indentación — tabs en lugar de espacios rompen el parseo silenciosamente.">YAML</Term>, jerárquico
+
+Los dos son equivalentes en lo que pueden expresar. Lo habitual es elegir uno y usarlo de forma consistente en todo el proyecto.
+
+## `.properties` vs `.yml` — cuál elegir
+
+La misma configuración en los dos formatos:
+
+```properties
+# application.properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/springpath
+spring.datasource.username=admin
+spring.datasource.password=secret
+spring.datasource.hikari.maximum-pool-size=10
+```
+
+```yaml
+# application.yml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/springpath
+    username: admin
+    password: secret
+    hikari:
+      maximum-pool-size: 10
+```
+
+`.properties` es simple y sin sorpresas — no hay indentación que pueda quebrarse accidentalmente. Funciona muy bien para configuración plana.
+
+`.yml` elimina la repetición de prefijos. En el ejemplo, `spring.datasource.` aparece una sola vez como clave padre. Con configuración compleja y muy anidada, la diferencia de legibilidad es notable.
+
+Ojo con un detalle de YAML: los tipos son automáticos. `enabled: true` es un booleano; `enabled: "true"` es un string. Si Spring espera un booleano y recibe un string, el error aparece en <Term definition="El momento en que la aplicación se inicializa y el ApplicationContext construye todos los beans. Si algo falla acá, la app no llega a recibir ningún request.">startup</Term> — que es lo mejor que puede pasar, pero evitalo siendo explícito con los tipos.
+
+## `@Value` — inyectar una propiedad puntual
+
+Para consumir un valor de configuración en una clase:
+
+```java
+@Service
+public class NotificationService {
+
+    @Value("${app.notifications.email-sender}")
+    private String emailSender;
+
+    @Value("${app.notifications.max-retries:3}") // :3 es el valor por defecto
+    private int maxRetries;
+}
+```
+
+El `${…}` es el nombre de la propiedad. El `:` al final define un default si la propiedad no está definida en ningún archivo de configuración.
+
+Funciona bien para uno o dos valores aislados. Cuando la cantidad crece, el `@Value` disperso en varios campos de varias clases se vuelve difícil de rastrear: no es obvio qué propiedades existen, cuáles son requeridas, ni dónde se usan.
+
+## `@ConfigurationProperties` — agrupar configuración relacionada
+
+La alternativa es mapear todo un grupo de propiedades a un objeto tipado:
+
+```java
+@ConfigurationProperties(prefix = "app.notifications")
+public record NotificationProperties(
+    String emailSender,
+    int maxRetries,
+    Duration retryDelay
+) {}
+```
+
+```yaml
+app:
+  notifications:
+    email-sender: noreply@springpath.dev
+    max-retries: 3
+    retry-delay: 5s
+```
+
+```java
+@SpringBootApplication
+@EnableConfigurationProperties(NotificationProperties.class)
+public class SpringpathApplication { … }
+
+@Service
+public class NotificationService {
+
+    private final NotificationProperties config;
+
+    public NotificationService(NotificationProperties config) {
+        this.config = config;
+    }
+}
+```
+
+Usás un <Term definition="Clase de Java (disponible desde Java 16) diseñada para ser un contenedor inmutable de datos. El compilador genera automáticamente constructor, getters, equals, hashCode y toString. Ideal para objetos de configuración o DTOs.">record</Term> como contenedor. Spring mapea cada propiedad del archivo al campo correspondiente usando el prefijo. Fijate que `email-sender` en YAML (kebab-case) se mapea a `emailSender` en Java (camelCase) — Spring hace esa conversión automáticamente.
+
+Las diferencias respecto a `@Value`:
+
+| | `@Value` | `@ConfigurationProperties` |
+|---|---|---|
+| Validación de tipos | En runtime, al usarlo | En startup |
+| IDE autocomplete | No | Sí (con el procesador de anotaciones) |
+| Agrupación | Dispersa por clase | Centralizada en un objeto |
+| Valores por defecto | Inline con `:` | En el record o en el archivo |
+
+`@Value` es simple y no requiere setup. `@ConfigurationProperties` tiene más estructura inicial pero cuando el grupo de propiedades crece, esa estructura vale la pena: tenés un solo lugar donde mirar, el IDE te completa los nombres, y los errores de tipo aparecen al arrancar la app — no cuando ya está en producción.
+
+## Perfiles — configuración por entorno
+
+Si alguna vez cambiaste una URL de base de datos a mano antes de hacer un deploy, eso es el problema que resuelven los perfiles. Un perfil es un conjunto de configuración que se activa por nombre — sin tocar el código.
+
+La convención de nombres es `application-{perfil}.yml`:
+
+```yaml
+# application-dev.yml
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    com.springpath: DEBUG
+```
+
+```yaml
+# application-prod.yml
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST}:5432/springpath
+  jpa:
+    show-sql: false
+
+logging:
+  level:
+    com.springpath: WARN
+```
+
+Los valores del perfil activo **sobreescriben** los del `application.yml` base. Lo que no está en el perfil, se toma del base. Así el base tiene los defaults y los perfiles solo definen lo que cambia.
+
+`${DB_HOST}` es una variable de entorno del sistema operativo — Spring la resuelve en runtime. Es la forma estándar de pasar secretos y URLs de producción: nunca hardcodeados en un archivo que va al repositorio.
+
+Para activar un perfil:
+
+```properties
+# En application.properties — cómodo para desarrollo local
+spring.profiles.active=dev
+```
+
+```bash
+# En runtime — para producción o CI/CD
+SPRING_PROFILES_ACTIVE=prod java -jar app.jar
+```
+
+Y en tests, `@ActiveProfiles` activa el perfil para esa clase:
+
+```java
+@SpringBootTest
+@ActiveProfiles("dev")
+class OrderServiceIntegrationTest {
+    // corre con la configuración de application-dev.yml
+}
+```
+
+Una cosa importante sobre la precedencia: si la misma propiedad está en el `application.yml` base y en el perfil activo, gana el perfil. Si está en el perfil y también como variable de entorno, gana la variable de entorno. Las variables de entorno tienen la precedencia más alta — lo que te permite sobreescribir config en producción sin modificar ningún archivo.
+
+<Glossary
+  terms={[
+    {
+      term: "application.properties",
+      definition: "Archivo de configuración de Spring Boot en formato clave=valor. Vive en src/main/resources/. Simple y sin riesgo de errores de indentación."
+    },
+    {
+      term: "application.yml",
+      definition: "Archivo de configuración de Spring Boot en formato YAML. Permite agrupar propiedades relacionadas bajo claves padre, eliminando la repetición de prefijos. Sensible a la indentación — siempre usar espacios, nunca tabs."
+    },
+    {
+      term: "YAML",
+      definition: "Formato de serialización de datos basado en indentación. Permite representar estructuras anidadas de forma legible. Los tipos son automáticos: true es booleano, '42' es string, 42 es número."
+    },
+    {
+      term: "@Value",
+      definition: "Anotación que inyecta el valor de una propiedad de configuración en un campo. Soporta valores por defecto con la sintaxis ${propiedad:default}. Ideal para uno o dos valores aislados."
+    },
+    {
+      term: "@ConfigurationProperties",
+      definition: "Anotación que mapea un grupo de propiedades (identificadas por un prefijo) a un objeto Java tipado. Permite IDE autocomplete, validación en startup, y centraliza la configuración relacionada en un solo lugar."
+    },
+    {
+      term: "Perfil (Spring Profile)",
+      definition: "Conjunto de configuración identificado por un nombre que se activa bajo demanda. Permite tener configuraciones distintas para dev, prod, test, etc. sin cambiar el código."
+    },
+    {
+      term: "record (Java)",
+      definition: "Clase de Java (desde Java 16) diseñada para ser un contenedor inmutable de datos. El compilador genera automáticamente constructor, getters, equals, hashCode y toString."
+    },
+    {
+      term: "@ActiveProfiles",
+      definition: "Anotación de testing que activa uno o más perfiles de Spring para la clase de tests anotada. Permite correr tests con la configuración de un perfil específico."
+    },
+    {
+      term: "Variable de entorno",
+      definition: "Variable definida en el sistema operativo, referenciada como ${NOMBRE} en archivos de configuración de Spring. Tiene la mayor precedencia sobre cualquier archivo — es la forma estándar de pasar secretos en producción."
+    }
+  ]}
+/>

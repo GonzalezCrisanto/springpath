@@ -75,4 +75,24 @@ export const mdxComponents = {
   hr: (props: ComponentPropsWithoutRef<'hr'>) => (
     <hr className="border-border my-6" {...props} />
   ),
+  table: (props: ComponentPropsWithoutRef<'table'>) => (
+    <div className="overflow-x-auto my-6">
+      <table className="w-full text-sm border-collapse" {...props} />
+    </div>
+  ),
+  thead: (props: ComponentPropsWithoutRef<'thead'>) => (
+    <thead className="border-b border-border" {...props} />
+  ),
+  tbody: (props: ComponentPropsWithoutRef<'tbody'>) => (
+    <tbody className="divide-y divide-border" {...props} />
+  ),
+  tr: (props: ComponentPropsWithoutRef<'tr'>) => (
+    <tr className="hover:bg-elevated/50 transition-colors" {...props} />
+  ),
+  th: (props: ComponentPropsWithoutRef<'th'>) => (
+    <th className="text-left px-4 py-2 text-text-muted font-medium" {...props} />
+  ),
+  td: (props: ComponentPropsWithoutRef<'td'>) => (
+    <td className="px-4 py-2 text-text-secondary" {...props} />
+  ),
 }

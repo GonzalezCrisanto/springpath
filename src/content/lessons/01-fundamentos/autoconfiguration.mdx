@@ -1,0 +1,204 @@
+import { Quiz } from '../../../components/quiz/Quiz'
+import { Glossary } from '../../../components/lesson/Glossary'
+import { Term } from '../../../components/lesson/Term'
+import { DiagramaAutoconfiguration } from '../../../components/interactive/DiagramaAutoconfiguration'
+
+Antes de Spring Boot existía Spring Framework a secas — y configurar una app era trabajo manual considerable. Querés conectar una base de datos: declarás un `DataSource`, un `EntityManagerFactory`, un `TransactionManager`, y algunas cosas más, todo en XML o en clases de configuración. Cada proyecto nuevo arranca copiando esa misma configuración con pequeñas variaciones. Un quilombo.
+
+Spring Boot vino a resolver exactamente eso con una idea directa: **si sé qué dependencias tenés en el <Term definition="La lista de clases y librerías (JARs) disponibles para la JVM en tiempo de ejecución. Spring Boot lo inspecciona al arrancar para decidir qué configurar automáticamente.">classpath</Term>, puedo configurar lo obvio por vos**.
+
+## `@SpringBootApplication` por dentro
+
+La clase principal de cualquier app Spring Boot se ve así:
+
+```java
+@SpringBootApplication
+public class MiAplicacion {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MiAplicacion.class, args);
+    }
+}
+```
+
+`@SpringBootApplication` parece una sola anotación, pero en realidad es tres pegadas:
+
+```java
+@SpringBootConfiguration   // equivalente a @Configuration — esta clase puede definir beans
+@EnableAutoConfiguration   // activa el mecanismo de autoconfiguration
+@ComponentScan             // escanea el paquete actual y subpaquetes buscando beans
+```
+
+La que nos interesa es `@EnableAutoConfiguration`. Esa es la que le dice a Spring: "mirá el classpath y configurá todo lo que puedas de forma automática".
+
+## Cómo funciona la autoconfiguration
+
+El mecanismo se apoya en dos piezas que trabajan juntas.
+
+**Detección del classpath.** Al arrancar, Spring Boot revisa qué clases y <Term definition="Java ARchive: un archivo comprimido que agrupa clases Java, recursos, y metadatos. Las librerías se distribuyen como JARs, y el classpath es la lista de JARs disponibles para la JVM.">JARs</Term> están disponibles. Si encuentra las clases de JPA, asume que querés una base de datos. Si encuentra Spring MVC, asume que querés un servidor web.
+
+**Configuraciones condicionales.** Cada autoconfiguration es una clase `@Configuration` normal, pero con condiciones adjuntas. Ejemplo simplificado de lo que vive dentro de Spring Boot (no en tu código):
+
+```java
+@Configuration
+@ConditionalOnClass(DataSource.class)        // solo si DataSource está en el classpath
+@ConditionalOnMissingBean(DataSource.class)  // solo si vos no definiste uno propio
+public class DataSourceAutoConfiguration {
+
+    @Bean
+    public DataSource dataSource(DataSourceProperties props) {
+        return DataSourceBuilder.create()
+            .url(props.getUrl())
+            .username(props.getUsername())
+            .password(props.getPassword())
+            .build();
+    }
+}
+```
+
+Fijate en <Term definition="Anotación condicional de Spring Boot. La clase o bean que la lleva solo se activa si la clase especificada está presente en el classpath. Si la clase no existe, la configuración entera se ignora.">@ConditionalOnClass</Term>: si `DataSource.class` no está en el classpath, toda la configuración se ignora — ni siquiera se evalúa.
+
+Y <Term definition="Anotación condicional de Spring Boot. El bean anotado solo se crea si en el contexto de Spring no existe ya otro bean del mismo tipo. Si vos definiste uno propio, Spring se retira y usa el tuyo.">@ConditionalOnMissingBean</Term> es la parte más importante: si vos ya definiste tu propio `DataSource` en algún lugar del código, Spring Boot lo detecta y no pisa el tuyo. La autoconfiguration es un fallback inteligente, no una imposición.
+
+<DiagramaAutoconfiguration />
+
+## Los starters
+
+Para que la autoconfiguration pueda detectar algo, primero ese "algo" tiene que estar en el classpath. Ahí entran los **starters**.
+
+Un starter es un <Term definition="Java ARchive: archivo comprimido con clases Java. Un starter es un JAR especial que solo contiene un pom.xml con dependencias — no tiene lógica propia. Su único trabajo es traer otras librerías al classpath.">JAR</Term> que agrupa dependencias relacionadas. No tiene código de lógica de negocio — solo un <Term definition="El archivo descriptor de un proyecto Maven. Define las dependencias, plugins, y metadatos del proyecto. Al declarar una dependencia acá, Maven la descarga y la pone disponible en el classpath.">pom.xml</Term> con las dependencias necesarias para una funcionalidad.
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+```
+
+Esa sola línea trae al classpath: Spring MVC, un Tomcat embebido, Jackson para serializar JSON, y librerías de validación. Con eso, la autoconfiguration detecta las clases correspondientes y configura todo lo necesario para una API REST.
+
+Otros starters frecuentes:
+
+| Starter | Qué pone en el classpath |
+|---------|--------------------------|
+| `spring-boot-starter-data-jpa` | Hibernate, Spring Data, HikariCP |
+| `spring-boot-starter-security` | Spring Security completo |
+| `spring-boot-starter-test` | JUnit 5, Mockito, AssertJ, Spring Test |
+
+El starter pone las clases en el classpath; la autoconfiguration las detecta y crea los beans. Los dos mecanismos trabajan en tándem — uno sin el otro no hace nada.
+
+## Dónde vive el registro de autoconfigurations
+
+Las autoconfigurations disponibles están declaradas en un archivo dentro de cada JAR de Spring Boot:
+
+- Hasta Spring Boot 2.x: `META-INF/spring.factories`
+- Desde Spring Boot 3.x: `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
+
+Al arrancar, Spring Boot lee esos archivos, reúne la lista de clases de autoconfiguration, y las evalúa una por una — aplicando las condiciones `@ConditionalOn*` para decidir cuáles activar.
+
+Si tenés curiosidad, podés abrir el JAR de `spring-boot-autoconfigure` y ver la lista completa. Son cientos de entradas — una por cada cosa que Spring Boot puede configurar automáticamente.
+
+## Personalizar o deshabilitar una autoconfiguration
+
+Hay casos en que la configuración automática no aplica. Por ejemplo, si necesitás configurar el `DataSource` vos mismo porque usás un pool de conexiones diferente, simplemente definís tu propio bean y la autoconfiguration de `DataSource` se retira sola gracias a `@ConditionalOnMissingBean`.
+
+Para los casos en que necesitás deshabilitar una autoconfiguration entera sin definir un bean alternativo, hay dos caminos:
+
+```java
+@SpringBootApplication(exclude = {
+    SecurityAutoConfiguration.class,
+    UserDetailsServiceAutoConfiguration.class
+})
+public class MiAplicacion {
+    // Spring Security no se autoconfigura
+}
+```
+
+O bien en `application.properties`:
+
+```properties
+spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration
+```
+
+Ambos hacen lo mismo. La elección entre uno u otro depende de si preferís que quede declarado en código o en configuración.
+
+## Autoevaluación
+
+<Quiz
+  lessonId="autoconfiguration"
+  questions={[
+    {
+      id: "q1",
+      question: "¿Qué analiza Spring Boot para decidir qué autoconfigurar?",
+      options: [
+        "El nombre del proyecto declarado en pom.xml",
+        "Las clases y JARs disponibles en el classpath",
+        "Las variables de entorno del sistema operativo",
+        "El nombre del paquete raíz de la aplicación"
+      ],
+      correctIndex: 1,
+      explanation: "Spring Boot inspecciona el classpath — las clases y JARs disponibles en runtime. Si detecta Hibernate, evalúa las autoconfigurations de JPA. Si detecta Tomcat, evalúa las de web. El classpath es el disparador de todo el mecanismo."
+    },
+    {
+      id: "q2",
+      question: "¿Qué hace @ConditionalOnMissingBean?",
+      options: [
+        "Lanza una excepción si falta un bean requerido",
+        "Crea un bean solo si no existe otro del mismo tipo en el contexto",
+        "Marca un bean como opcional en el contexto de Spring",
+        "Deshabilita la autoconfiguration para ese tipo de bean"
+      ],
+      correctIndex: 1,
+      explanation: "@ConditionalOnMissingBean evalúa si ya existe un bean del tipo especificado en el contexto. Si encontró uno, la autoconfiguration no crea el suyo. Si no encontró ninguno, lo crea. Eso es lo que hace que Spring Boot se retire cuando vos definís tu propio bean."
+    },
+    {
+      id: "q3",
+      question: "Un starter de Spring Boot, ¿qué contiene en realidad?",
+      options: [
+        "Código de lógica de negocio preconfigurado para un dominio específico",
+        "Solo un pom.xml con dependencias transitivas — no tiene lógica propia",
+        "Anotaciones especiales que activan funcionalidades directamente",
+        "Un servidor embebido preconfigurado con defaults de producción"
+      ],
+      correctIndex: 1,
+      explanation: "Un starter es un JAR descriptor: solo tiene un pom.xml que declara dependencias transitivas. Su trabajo es poner las clases necesarias en el classpath para que la autoconfiguration las detecte. No tiene lógica propia."
+    }
+  ]}
+/>
+
+<Glossary
+  terms={[
+    {
+      term: "Autoconfiguration",
+      definition: "Mecanismo de Spring Boot que configura beans automáticamente en base a lo que detecta en el classpath. Cada autoconfiguration es una clase @Configuration con condiciones (@ConditionalOn*) que determinan si se activa o no."
+    },
+    {
+      term: "Starter",
+      definition: "JAR descriptor que agrupa dependencias relacionadas. No tiene lógica propia — solo un pom.xml con dependencias transitivas. Su propósito es poner las clases necesarias en el classpath para que la autoconfiguration actúe."
+    },
+    {
+      term: "@ConditionalOnClass",
+      definition: "Anotación que hace condicional una configuración: solo se activa si la clase especificada está presente en el classpath. Si la clase no existe (porque no agregaste el starter correspondiente), toda la configuración se ignora."
+    },
+    {
+      term: "@ConditionalOnMissingBean",
+      definition: "Anotación que hace condicional la creación de un bean: solo se crea si no existe otro bean del mismo tipo en el contexto. Es lo que permite que definir tu propio bean 'apague' la autoconfiguration correspondiente."
+    },
+    {
+      term: "@SpringBootApplication",
+      definition: "Anotación compuesta que agrupa @SpringBootConfiguration, @EnableAutoConfiguration y @ComponentScan. Se coloca en la clase principal y activa todo el mecanismo de arranque de Spring Boot."
+    },
+    {
+      term: "@EnableAutoConfiguration",
+      definition: "La anotación que activa el mecanismo de autoconfiguration. Le dice a Spring que lea los archivos de registro (META-INF/spring/...) y evalúe todas las autoconfigurations disponibles."
+    },
+    {
+      term: "Boilerplate",
+      definition: "Código que se repite en múltiples proyectos con mínimas variaciones. La autoconfiguration de Spring Boot existe precisamente para eliminar el boilerplate de configuración que cada app repetía igual."
+    },
+    {
+      term: "spring.factories / AutoConfiguration.imports",
+      definition: "Archivos dentro de los JARs de Spring Boot que registran las clases de autoconfiguration disponibles. Spring Boot los lee al arrancar para saber qué autoconfigurations evaluar. Desde Spring Boot 3.x se usa AutoConfiguration.imports en lugar de spring.factories."
+    }
+  ]}
+/>

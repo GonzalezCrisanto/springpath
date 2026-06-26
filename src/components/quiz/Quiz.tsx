@@ -1,9 +1,10 @@
 import { useState } from 'react'
 
 export interface QuizQuestion {
+  id: string
   question: string
   options: string[]
-  correct: number
+  correctIndex: number
   explanation?: string
 }
 
@@ -43,7 +44,7 @@ export function Quiz({ questions }: QuizProps) {
       return `${base} border-border text-text-secondary hover:border-accent hover:text-text-primary`
     }
 
-    if (optionIndex === current.correct) {
+    if (optionIndex === current.correctIndex) {
       return `${base} border-accent bg-accent-bg text-accent-soft`
     }
 
