@@ -1,5 +1,6 @@
 import { Link } from "react-router"
 import { ThemeToggle } from "./ThemeToggle"
+import { Logo } from "./Logo"
 
 interface NavbarProps {
   onMenuToggle?: () => void
@@ -35,8 +36,9 @@ export function Navbar({ onMenuToggle }: NavbarProps) {
         )}
         <Link
           to="/"
-          className="text-base font-medium text-text-primary hover:text-accent-soft transition-colors"
+          className="flex items-center gap-2 text-base font-medium text-text-primary hover:text-accent-soft transition-colors"
         >
+          <Logo />
           Springpath
         </Link>
       </div>
