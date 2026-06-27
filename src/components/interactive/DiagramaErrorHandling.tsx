@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { ScenarioDiagram, type Scenario } from './ScenarioDiagram'
+import { ScenarioDiagram } from './ScenarioDiagram'
 
 interface SceneProps { reduced: boolean }
 
