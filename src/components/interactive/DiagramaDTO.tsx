@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { ScenarioDiagram, type Scenario } from './ScenarioDiagram'
+import { ScenarioDiagram } from './ScenarioDiagram'
 
 interface SceneProps { reduced: boolean }
 
@@ -64,7 +64,7 @@ function ConDTOScene({ reduced }: SceneProps) {
       >
         <span className="text-xs font-medium text-text-secondary block mb-2">User (entidad JPA)</span>
         <div className="flex flex-col gap-1">
-          {['id', 'email', 'name', 'passwordHash', 'internalRole'].map((field, i) => (
+          {['id', 'email', 'name', 'passwordHash', 'internalRole'].map((field) => (
             <div key={field} className="text-xs font-mono text-text-muted/50 px-2 py-0.5">
               {field}
             </div>

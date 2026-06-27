@@ -33,7 +33,7 @@ function SinActuatorScene({ reduced }: SceneProps) {
       >
         <span className="text-xs font-medium text-text-secondary">Spring Boot App</span>
         <div className="flex gap-2 mt-1">
-          {['JVM', 'DB', 'cache'].map((label, i) => (
+          {['JVM', 'DB', 'cache'].map((label) => (
             <div key={label} className="border border-border rounded px-2 py-1">
               <span className="text-xs text-text-muted">{label}</span>
             </div>

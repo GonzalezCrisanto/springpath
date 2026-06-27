@@ -25,6 +25,7 @@ function writeToStorage(ids: Set<string>): void {
 export function useProgress(): {
   completedIds: Set<string>
   markComplete: (lessonId: string) => void
+  markIncomplete: (lessonId: string) => void
   isComplete: (lessonId: string) => boolean
 } {
   const [completedIds, setCompletedIds] = useState<Set<string>>(() => readFromStorage())
