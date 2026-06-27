@@ -64,7 +64,7 @@ function TrackSection({ track, activeTrackId, activeLessonId, onLinkClick }: Tra
   const [modalOpen, setModalOpen] = useState(false)
   const { isComplete } = useProgress()
 
-  const isLocked = track.order > 2
+  const isLocked = track.order > 2 && import.meta.env.VITE_LOCK_TRACKS === "true"
 
   if (isLocked) {
     return (
