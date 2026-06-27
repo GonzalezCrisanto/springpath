@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Link, useParams } from "react-router"
 import type { Track } from "../../content/tracks"
 import { useProgress } from "../../contexts/ProgressContext"
+import { ComingSoonModal } from "./ComingSoonModal"
 
 interface SidebarProps {
   tracks: Track[]
@@ -37,10 +38,54 @@ interface TrackSectionProps {
   onLinkClick?: () => void
 }
 
+function LockIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  )
+}
+
 function TrackSection({ track, activeTrackId, activeLessonId, onLinkClick }: TrackSectionProps) {
   const isActiveTrack = track.id === activeTrackId
   const [open, setOpen] = useState(isActiveTrack)
+  const [modalOpen, setModalOpen] = useState(false)
   const { isComplete } = useProgress()
+
+  const isLocked = track.order > 2
+
+  if (isLocked) {
+    return (
+      <div>
+        <button
+          onClick={() => setModalOpen(true)}
+          className="w-full flex items-center justify-between gap-2 px-4 py-2 text-sm font-medium hover:text-text-primary hover:bg-elevated transition-colors text-left border-l-2 border-transparent text-text-secondary"
+        >
+          <span className="flex-1 truncate">{track.title}</span>
+          <span className="text-text-muted shrink-0">
+            <LockIcon />
+          </span>
+        </button>
+        <ComingSoonModal
+          track={track}
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+        />
+      </div>
+    )
+  }
 
   return (
     <div>
